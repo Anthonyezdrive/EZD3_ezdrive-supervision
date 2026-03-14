@@ -2,7 +2,7 @@ import { useOutletContext } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList,
 } from "recharts";
-import { Clock, Zap, Euro, Gauge, XCircle, Info } from "lucide-react";
+import { Clock, Zap, Euro, Gauge, AlertTriangle, CheckCircle } from "lucide-react";
 import { KPICard } from "@/components/ui/KPICard";
 import { useB2BCdrs } from "@/hooks/useB2BCdrs";
 import {
@@ -87,7 +87,7 @@ export function B2BOverviewPage() {
 
       {/* Bar Chart: Volume par mois */}
       <div className="bg-surface border border-border rounded-2xl p-6">
-        <h3 className="text-sm font-semibold text-foreground mb-4">
+        <h3 className="text-base font-semibold text-foreground mb-4">
           Somme de Volume par Mois
         </h3>
         {chartData.length > 0 ? (
@@ -95,19 +95,19 @@ export function B2BOverviewPage() {
             <BarChart data={chartData} margin={{ top: 20, right: 10, bottom: 5, left: -10 }}>
               <XAxis
                 dataKey="name"
-                tick={{ fill: "#8892B0", fontSize: 11 }}
+                tick={{ fill: "#B0B8D4", fontSize: 12 }}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
-                tick={{ fill: "#8892B0", fontSize: 11 }}
+                tick={{ fill: "#B0B8D4", fontSize: 12 }}
                 axisLine={false}
                 tickLine={false}
                 allowDecimals={false}
               />
               <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [`${v} kWh`, "Volume"]} />
               <Bar dataKey="volume" radius={[8, 8, 0, 0]} maxBarSize={50}>
-                <LabelList dataKey="volume" position="top" fill="#8892B0" fontSize={11} />
+                <LabelList dataKey="volume" position="top" fill="#D0D6E8" fontSize={12} fontWeight={500} />
                 {chartData.map((_, i) => (
                   <Cell key={i} fill={BAR_COLOR} />
                 ))}
@@ -123,40 +123,38 @@ export function B2BOverviewPage() {
 
       {/* Secondary stats row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-surface border border-border rounded-2xl p-5 text-center">
+        <div className="bg-surface border border-border rounded-2xl p-5">
+          <p className="text-sm text-foreground-muted mb-2">Volume moyen / session</p>
           <p className="text-2xl font-heading font-bold text-foreground">
-            {formatNumber(kpis.avgEnergyPerSession)} kWh
+            {formatNumber(kpis.avgEnergyPerSession)} <span className="text-base font-normal text-foreground-muted">kWh</span>
           </p>
-          <p className="text-xs text-foreground-muted mt-1">Volume moyen / session</p>
         </div>
-        <div className="bg-surface border border-border rounded-2xl p-5 text-center">
+        <div className="bg-surface border border-border rounded-2xl p-5">
+          <p className="text-sm text-foreground-muted mb-2">Temps réel / session</p>
           <p className="text-2xl font-heading font-bold text-foreground">
             {formatDurationShort(kpis.avgRealTime)}
           </p>
-          <p className="text-xs text-foreground-muted mt-1">Temps réel / session</p>
         </div>
-        <div className="bg-surface border border-border rounded-2xl p-5 text-center">
+        <div className="bg-surface border border-border rounded-2xl p-5">
+          <p className="text-sm text-foreground-muted mb-2">Temps équivalent / session</p>
           <p className="text-2xl font-heading font-bold text-foreground">
             {formatDurationShort(kpis.avgEquivTime)}
           </p>
-          <p className="text-xs text-foreground-muted mt-1">Temps équivalent / session</p>
         </div>
-        <div className="bg-surface border border-border rounded-2xl p-5 text-center">
-          <div className="flex items-center justify-center gap-2">
+        <div className={`bg-surface border rounded-2xl p-5 ${kpis.ventouse.isWarning ? "border-red-500/40" : "border-border"}`}>
+          <p className="text-sm text-foreground-muted mb-2">Temps en ventouse</p>
+          <div className="flex items-center gap-2">
             {kpis.ventouse.isWarning ? (
-              <XCircle className="w-5 h-5 text-red-400" />
+              <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
             ) : (
-              <Info className="w-5 h-5 text-blue-400" />
+              <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
             )}
-            <p
-              className="text-lg font-heading font-bold"
-              style={{ color: kpis.ventouse.color }}
-            >
-              {kpis.ventouse.label}
+            <p className="text-2xl font-heading font-bold text-foreground">
+              {formatNumber(kpis.saturation * 100)}%
             </p>
           </div>
-          <p className="text-xs text-foreground-muted mt-1">
-            {formatNumber(kpis.saturation * 100)}% du temps en ventouse
+          <p className="text-xs text-foreground-muted mt-1.5">
+            {kpis.ventouse.label}
           </p>
         </div>
       </div>

@@ -21,8 +21,8 @@ const tooltipStyle = {
 };
 
 const thClass =
-  "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-foreground-muted";
-const tdClass = "px-4 py-3 text-sm text-foreground whitespace-nowrap";
+  "px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-foreground-muted";
+const tdClass = "px-4 py-3.5 text-sm text-foreground whitespace-nowrap";
 
 export function B2BChargepointsPage() {
   const { activeClient, customerExternalIds } =
@@ -72,7 +72,7 @@ export function B2BChargepointsPage() {
     <div className="space-y-6">
       {/* Donut chart + Legend */}
       <div className="bg-surface border border-border rounded-2xl p-6">
-        <h3 className="text-sm font-semibold text-foreground mb-4">
+        <h3 className="text-base font-semibold text-foreground mb-4">
           Répartition des Volumes délivrés par Borne
         </h3>
         {chartData.length > 0 ? (
@@ -101,15 +101,15 @@ export function B2BChargepointsPage() {
             </ResponsiveContainer>
 
             {/* Legend */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 flex-1">
               {chartData.map((entry, i) => (
-                <div key={entry.name} className="flex items-center gap-2">
+                <div key={entry.name} className="flex items-center gap-2.5">
                   <div
                     className="w-3 h-3 rounded-full shrink-0"
                     style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
                   />
-                  <span className="text-xs text-foreground truncate">{entry.name}</span>
-                  <span className="text-xs text-foreground-muted ml-auto">{entry.pct}%</span>
+                  <span className="text-sm text-foreground truncate">{entry.name}</span>
+                  <span className="text-sm text-foreground-muted ml-auto tabular-nums">{entry.pct}%</span>
                 </div>
               ))}
             </div>
@@ -123,7 +123,7 @@ export function B2BChargepointsPage() {
 
       {/* Table */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-foreground">Détail par borne</h3>
+        <h3 className="text-base font-semibold text-foreground">Détail par borne</h3>
         <button
           onClick={handleExport}
           disabled={rows.length === 0}

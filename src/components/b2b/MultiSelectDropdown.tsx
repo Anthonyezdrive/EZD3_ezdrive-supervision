@@ -60,7 +60,7 @@ export function MultiSelectDropdown({
 
   return (
     <div ref={ref} className="relative">
-      <label className="block text-[10px] text-foreground-muted uppercase tracking-wider mb-1">
+      <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
         {label}
       </label>
       <button

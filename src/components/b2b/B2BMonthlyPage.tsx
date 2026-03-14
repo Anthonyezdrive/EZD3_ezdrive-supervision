@@ -7,8 +7,8 @@ import { downloadCSV, todayISO } from "@/lib/export";
 import type { B2BClient } from "@/types/b2b";
 
 const thClass =
-  "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-foreground-muted";
-const tdClass = "px-4 py-3 text-sm text-foreground whitespace-nowrap";
+  "px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-foreground-muted";
+const tdClass = "px-4 py-3.5 text-sm text-foreground whitespace-nowrap";
 
 export function B2BMonthlyPage() {
   const { activeClient, customerExternalIds } =
@@ -59,7 +59,7 @@ export function B2BMonthlyPage() {
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-foreground">
+        <h3 className="text-xl font-heading font-bold text-foreground">
           Rapport mensuel — {year}
         </h3>
         <button

@@ -44,6 +44,7 @@ import { DriversPage } from "@/components/drivers/DriversPage";
 import { ValidateTokenPage } from "@/components/validate-token/ValidateTokenPage";
 // ── Administration ────────────────────────────────────────
 import { AdminPage } from "@/components/admin/AdminPage";
+import { B2BAdminPage } from "@/components/admin/B2BAdminPage";
 import { UsersPage } from "@/components/users/UsersPage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 // ── Portail B2B ──────────────────────────────────────────
@@ -109,6 +110,7 @@ export default function App() {
                 <Route path="/validate-token" element={<ValidateTokenPage />} />
                 {/* Administration */}
                 <Route path="/admin" element={<AdminPage />} />
+                <Route path="/admin/b2b" element={<B2BAdminPage />} />
                 <Route path="/users" element={<UsersPage />} />
                 <Route path="/roles" element={<RolesPage />} />
                 <Route path="/exceptions" element={<ExceptionsPage />} />

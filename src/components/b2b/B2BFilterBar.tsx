@@ -24,7 +24,7 @@ export function B2BFilterBar({
     <div className="flex flex-wrap items-end gap-3">
       {/* Year selector */}
       <div>
-        <label className="block text-[10px] text-foreground-muted uppercase tracking-wider mb-1">
+        <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
           Année
         </label>
         <select

@@ -51,7 +51,7 @@ function B2BLayoutInner() {
         {/* Admin: client selector */}
         {isAdmin && clients.length > 1 && (
           <div>
-            <label className="block text-[10px] text-foreground-muted uppercase tracking-wider mb-1">
+            <label className="block text-xs text-foreground-muted uppercase tracking-wider mb-1">
               Client
             </label>
             <select
@@ -85,7 +85,7 @@ function B2BLayoutInner() {
             to={tab.to}
             className={({ isActive }) =>
               cn(
-                "flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-[1px]",
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-[1px]",
                 isActive
                   ? "text-primary border-primary"
                   : "text-foreground-muted border-transparent hover:text-foreground hover:border-foreground-muted/30"

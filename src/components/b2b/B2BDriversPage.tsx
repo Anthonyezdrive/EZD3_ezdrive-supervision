@@ -22,8 +22,8 @@ const tooltipStyle = {
 };
 
 const thClass =
-  "px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-foreground-muted";
-const tdClass = "px-4 py-3 text-sm text-foreground whitespace-nowrap";
+  "px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-foreground-muted";
+const tdClass = "px-4 py-3.5 text-sm text-foreground whitespace-nowrap";
 
 export function B2BDriversPage() {
   const { activeClient, customerExternalIds } =
@@ -70,7 +70,7 @@ export function B2BDriversPage() {
     <div className="space-y-6">
       {/* Pie chart */}
       <div className="bg-surface border border-border rounded-2xl p-6">
-        <h3 className="text-sm font-semibold text-foreground mb-4">
+        <h3 className="text-base font-semibold text-foreground mb-4">
           Volume (kWh) Mobilité flotte par Nom du conducteur
         </h3>
         {chartData.length > 0 ? (
@@ -98,15 +98,15 @@ export function B2BDriversPage() {
             </ResponsiveContainer>
 
             {/* Legend */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 flex-1">
               {chartData.map((entry, i) => (
-                <div key={entry.name} className="flex items-center gap-2">
+                <div key={entry.name} className="flex items-center gap-2.5">
                   <div
                     className="w-3 h-3 rounded-full shrink-0"
                     style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
                   />
-                  <span className="text-xs text-foreground truncate">{entry.name}</span>
-                  <span className="text-xs text-foreground-muted ml-auto">
+                  <span className="text-sm text-foreground truncate">{entry.name}</span>
+                  <span className="text-sm text-foreground-muted ml-auto tabular-nums">
                     {totalVolume > 0
                       ? `${((entry.value / totalVolume) * 100).toFixed(0)}%`
                       : "0%"}
@@ -124,7 +124,7 @@ export function B2BDriversPage() {
 
       {/* Table */}
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-foreground">
+        <h3 className="text-base font-semibold text-foreground">
           Détail par conducteur
         </h3>
         <button

@@ -126,6 +126,7 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Administration",
     items: [
       { to: "/admin", label: "Gestion CPO", icon: Tag },
+      { to: "/admin/b2b", label: "Gestion B2B", icon: Handshake },
       { to: "/users", label: "Utilisateurs", icon: Users },
       { to: "/roles", label: "Rôles & Permissions", icon: Shield },
       { to: "/exceptions", label: "Exceptions", icon: ShieldAlert },
