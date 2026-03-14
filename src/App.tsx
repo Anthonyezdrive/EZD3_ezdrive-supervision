@@ -46,6 +46,12 @@ import { ValidateTokenPage } from "@/components/validate-token/ValidateTokenPage
 import { AdminPage } from "@/components/admin/AdminPage";
 import { UsersPage } from "@/components/users/UsersPage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+// ── Portail B2B ──────────────────────────────────────────
+import { B2BLayout } from "@/components/b2b/B2BLayout";
+import { B2BOverviewPage } from "@/components/b2b/B2BOverviewPage";
+import { B2BMonthlyPage } from "@/components/b2b/B2BMonthlyPage";
+import { B2BChargepointsPage } from "@/components/b2b/B2BChargepointsPage";
+import { B2BDriversPage } from "@/components/b2b/B2BDriversPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -107,6 +113,14 @@ export default function App() {
                 <Route path="/roles" element={<RolesPage />} />
                 <Route path="/exceptions" element={<ExceptionsPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                {/* Portail B2B */}
+                <Route path="/b2b" element={<B2BLayout />}>
+                  <Route index element={<B2BOverviewPage />} />
+                  <Route path="overview" element={<B2BOverviewPage />} />
+                  <Route path="monthly" element={<B2BMonthlyPage />} />
+                  <Route path="chargepoints" element={<B2BChargepointsPage />} />
+                  <Route path="drivers" element={<B2BDriversPage />} />
+                </Route>
               </Route>
             </Route>
           </Routes>

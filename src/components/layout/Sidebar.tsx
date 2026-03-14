@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -35,6 +35,7 @@ import {
   ScanLine,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 
 // ── Section + Item types ──────────────────────────────────
 
@@ -131,6 +132,16 @@ const NAV_SECTIONS: NavSection[] = [
       { to: "/settings", label: "Paramètres", icon: Settings },
     ],
   },
+  {
+    id: "b2b-portal",
+    label: "Portail B2B",
+    items: [
+      { to: "/b2b/overview", label: "Vue d'ensemble", icon: LayoutDashboard },
+      { to: "/b2b/monthly", label: "Rapport mensuel", icon: FileText },
+      { to: "/b2b/chargepoints", label: "Par borne", icon: Radio },
+      { to: "/b2b/drivers", label: "Par conducteur", icon: UserCheck },
+    ],
+  },
 ];
 
 // ── Sidebar Component ─────────────────────────────────────
@@ -141,6 +152,18 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
+  const { profile } = useAuth();
+
+  // Role-based section filtering
+  const visibleSections = useMemo(() => {
+    if (profile?.role === "b2b_client") {
+      // B2B clients only see the B2B portal
+      return NAV_SECTIONS.filter((s) => s.id === "b2b-portal");
+    }
+    // Admin/operator/tech see everything
+    return NAV_SECTIONS;
+  }, [profile?.role]);
+
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     NAV_SECTIONS.forEach((s) => {
@@ -189,7 +212,7 @@ export function Sidebar({ isOpen = false, onClose }: SidebarProps) {
 
       {/* Navigation sections */}
       <nav className="flex-1 overflow-y-auto py-2 custom-scrollbar">
-        {NAV_SECTIONS.map((section) => (
+        {visibleSections.map((section) => (
           <div key={section.id} className="mb-0.5">
             {/* Section header */}
             <button
