@@ -3,9 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   Radio,
-  Wrench,
   Map,
-  Tag,
   Settings,
   BarChart2,
   Globe,
@@ -17,12 +15,9 @@ import {
   CreditCard,
   FileText,
   Wallet,
-  KeyRound,
-  Activity,
   MonitorCheck,
   MapPin,
   BatteryCharging,
-  Ticket,
   Leaf,
   Shield,
   ShieldAlert,
@@ -34,6 +29,7 @@ import {
   Building2,
   UserCheck,
   ScanLine,
+  Home,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -47,18 +43,24 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-interface NavSection {
-  id: string;
+interface NavSubSection {
   label: string;
   items: NavItem[];
 }
 
+interface NavSection {
+  id: string;
+  label: string;
+  items?: NavItem[];
+  subsections?: NavSubSection[];
+}
+
 const NAV_SECTIONS: NavSection[] = [
   {
-    id: "supervision",
-    label: "Supervision",
+    id: "home",
+    label: "Home",
     items: [
-      { to: "/dashboard", label: "Vue d'ensemble", icon: LayoutDashboard },
+      { to: "/dashboard", label: "Business Overview", icon: LayoutDashboard },
       { to: "/map", label: "Carte", icon: Map },
       { to: "/analytics", label: "Analytics SLA", icon: BarChart2 },
     ],
@@ -66,73 +68,95 @@ const NAV_SECTIONS: NavSection[] = [
   {
     id: "cpo",
     label: "CPO",
-    items: [
-      { to: "/stations", label: "Bornes", icon: Radio },
-      { to: "/locations", label: "Localisations", icon: MapPin },
-      { to: "/maintenance", label: "Maintenance", icon: Wrench },
-      { to: "/monitoring", label: "Monitoring", icon: MonitorCheck },
-      { to: "/smart-charging", label: "Smart Charging", icon: BatteryCharging },
-      { to: "/energy-mix", label: "Energy Mix", icon: Leaf },
+    subsections: [
+      {
+        label: "Overview",
+        items: [
+          { to: "/cpo-overview", label: "Vue d'ensemble CPO", icon: PieChart },
+        ],
+      },
+      {
+        label: "Network",
+        items: [
+          { to: "/cpo-networks", label: "Réseaux CPO", icon: Network },
+          { to: "/cpo-contracts", label: "Contrats CPO", icon: FileSignature },
+        ],
+      },
+      {
+        label: "Assets",
+        items: [
+          { to: "/stations", label: "Bornes", icon: Radio },
+          { to: "/locations", label: "Localisations", icon: MapPin },
+          { to: "/monitoring", label: "Monitoring", icon: MonitorCheck },
+          { to: "/smart-charging", label: "Smart Charging", icon: BatteryCharging },
+          { to: "/energy-mix", label: "Energy Mix", icon: Leaf },
+        ],
+      },
+      {
+        label: "Billing",
+        items: [
+          { to: "/billing", label: "CDRs & Factures", icon: FileText },
+          { to: "/tariffs", label: "Tarifs", icon: Wallet },
+          { to: "/roaming-contracts", label: "Accords & Remboursement", icon: Handshake },
+        ],
+      },
+      {
+        label: "Roaming",
+        items: [
+          { to: "/ocpi", label: "OCPI Gireve", icon: Globe },
+        ],
+      },
     ],
   },
   {
     id: "emsp",
-    label: "Clients",
-    items: [
-      { to: "/customers", label: "Gestion Clients", icon: Users },
-      { to: "/subscriptions", label: "Abonnements", icon: CreditCard },
-      { to: "/rfid", label: "Tokens RFID", icon: KeyRound },
-      { to: "/coupons", label: "Coupons", icon: Ticket },
+    label: "eMSP",
+    subsections: [
+      {
+        label: "Network",
+        items: [
+          { to: "/emsp-networks", label: "Réseaux eMSP", icon: Network },
+          { to: "/emsp-contracts", label: "Contrats eMSP", icon: FileSignature },
+          { to: "/emsps", label: "eMSPs", icon: Building2 },
+        ],
+      },
+      {
+        label: "Customers",
+        items: [
+          { to: "/customers", label: "Clients", icon: Users },
+          { to: "/drivers", label: "Conducteurs", icon: UserCheck },
+        ],
+      },
+      {
+        label: "Moyens de paiement",
+        items: [
+          { to: "/payment-methods", label: "Tokens & Abonnements", icon: CreditCard },
+        ],
+      },
     ],
   },
   {
-    id: "billing",
-    label: "Facturation",
+    id: "automation",
+    label: "Automation",
     items: [
-      { to: "/sessions", label: "Sessions CDR", icon: Activity },
-      { to: "/invoices", label: "Factures", icon: FileText },
-      { to: "/tariffs", label: "Tarifs", icon: Wallet },
-    ],
-  },
-  {
-    id: "integrations",
-    label: "Intégrations",
-    items: [
-      { to: "/ocpi", label: "OCPI Gireve", icon: Globe },
-    ],
-  },
-  {
-    id: "roaming-cpo",
-    label: "Roaming CPO",
-    items: [
-      { to: "/cpo-overview", label: "Vue d'ensemble CPO", icon: PieChart },
-      { to: "/cpo-networks", label: "Réseaux CPO", icon: Network },
-      { to: "/cpo-contracts", label: "Contrats CPO", icon: FileSignature },
-      { to: "/reimbursement", label: "Remboursement", icon: Receipt },
-      { to: "/agreements", label: "Accords", icon: Handshake },
-    ],
-  },
-  {
-    id: "roaming-emsp",
-    label: "Roaming eMSP",
-    items: [
-      { to: "/emsp-networks", label: "Réseaux eMSP", icon: Network },
-      { to: "/emsp-contracts", label: "Contrats eMSP", icon: FileSignature },
-      { to: "/emsps", label: "eMSPs", icon: Building2 },
-      { to: "/drivers", label: "Conducteurs", icon: UserCheck },
-      { to: "/validate-token", label: "Valider Token", icon: ScanLine },
+      { to: "/exceptions", label: "Exceptions", icon: ShieldAlert },
     ],
   },
   {
     id: "admin",
-    label: "Administration",
+    label: "Admin",
     items: [
-      { to: "/admin", label: "Gestion CPO", icon: Tag },
-      { to: "/admin/b2b", label: "Gestion B2B", icon: Handshake },
       { to: "/users", label: "Utilisateurs", icon: Users },
       { to: "/roles", label: "Rôles & Permissions", icon: Shield },
-      { to: "/exceptions", label: "Exceptions", icon: ShieldAlert },
-      { to: "/settings", label: "Paramètres", icon: Settings },
+      { to: "/admin-config", label: "Configuration", icon: Settings },
+      { to: "/admin/b2b", label: "Gestion B2B", icon: Handshake },
+    ],
+  },
+  {
+    id: "configuration",
+    label: "Configuration",
+    items: [
+      { to: "/validate-token", label: "Valider Token", icon: ScanLine },
     ],
   },
   {
@@ -146,6 +170,16 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
 ];
+
+// ── Helper: get all items from a section (flat) ───────────
+
+function getAllSectionItems(section: NavSection): NavItem[] {
+  if (section.items) return section.items;
+  if (section.subsections) {
+    return section.subsections.flatMap((sub) => sub.items);
+  }
+  return [];
+}
 
 // ── Sidebar Component ─────────────────────────────────────
 
@@ -162,24 +196,134 @@ export function Sidebar({ isOpen = false, onClose, collapsed = false, onToggleCo
   // Role-based section filtering
   const visibleSections = useMemo(() => {
     if (profile?.role === "b2b_client") {
-      // B2B clients only see the B2B portal
       return NAV_SECTIONS.filter((s) => s.id === "b2b-portal");
     }
-    // Admin/operator/tech see everything
     return NAV_SECTIONS;
   }, [profile?.role]);
 
+  // Section-level expand/collapse — Home and CPO expanded by default
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     NAV_SECTIONS.forEach((s) => {
-      // All sections open by default
-      initial[s.id] = true;
+      initial[s.id] = s.id === "home" || s.id === "cpo";
     });
     return initial;
   });
 
+  // Subsection-level expand/collapse — all expanded by default
+  const [subExpanded, setSubExpanded] = useState<Record<string, boolean>>({});
+
   function toggleSection(id: string) {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function isSubExpanded(sectionId: string, subLabel: string): boolean {
+    const key = `${sectionId}::${subLabel}`;
+    // Default to expanded if not explicitly set
+    return subExpanded[key] !== false;
+  }
+
+  function toggleSubSection(sectionId: string, subLabel: string) {
+    const key = `${sectionId}::${subLabel}`;
+    setSubExpanded((prev) => ({ ...prev, [key]: prev[key] === false }));
+  }
+
+  // ── Render a single NavItem ─────────────────────────────
+
+  function renderNavItem(item: NavItem, indented: boolean = false) {
+    return (
+      <NavLink
+        key={item.to}
+        to={item.to}
+        onClick={() => onClose?.()}
+        title={collapsed ? item.label : undefined}
+        className={({ isActive }) =>
+          cn(
+            "flex items-center rounded-lg font-medium transition-all",
+            collapsed
+              ? "justify-center p-2.5"
+              : cn("gap-2.5 py-2 text-[13px]", indented ? "pl-7 pr-3" : "px-3"),
+            isActive
+              ? "bg-primary/10 text-primary"
+              : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
+          )
+        }
+      >
+        <item.icon className="w-4 h-4 shrink-0" />
+        {!collapsed && <span className="truncate">{item.label}</span>}
+      </NavLink>
+    );
+  }
+
+  // ── Render section content (items or subsections) ───────
+
+  function renderSectionContent(section: NavSection) {
+    // Flat items (no subsections)
+    if (section.items) {
+      return (
+        <div
+          className={cn(
+            "space-y-0.5",
+            collapsed ? "px-1.5 pb-0.5" : "px-2 pb-1"
+          )}
+        >
+          {section.items.map((item) => renderNavItem(item))}
+        </div>
+      );
+    }
+
+    // Subsections
+    if (section.subsections) {
+      // In collapsed mode, show all items flat (no subsection headers)
+      if (collapsed) {
+        return (
+          <div className="space-y-0.5 px-1.5 pb-0.5">
+            {getAllSectionItems(section).map((item) => renderNavItem(item))}
+          </div>
+        );
+      }
+
+      return (
+        <div className="px-2 pb-1">
+          {section.subsections.map((sub) => {
+            const isOpen = isSubExpanded(section.id, sub.label);
+            return (
+              <div key={sub.label} className="mb-0.5">
+                {/* Subsection header */}
+                <button
+                  onClick={() => toggleSubSection(section.id, sub.label)}
+                  className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-foreground-muted/60 hover:text-foreground-muted transition-colors"
+                >
+                  <ChevronDown
+                    className={cn(
+                      "w-2.5 h-2.5 transition-transform duration-200",
+                      isOpen ? "rotate-0" : "-rotate-90"
+                    )}
+                  />
+                  <span>{sub.label}</span>
+                </button>
+
+                {/* Subsection items */}
+                <div
+                  className={cn(
+                    "overflow-hidden transition-all duration-200",
+                    isOpen
+                      ? "max-h-[500px] opacity-100"
+                      : "max-h-0 opacity-0"
+                  )}
+                >
+                  <div className="space-y-0.5">
+                    {sub.items.map((item) => renderNavItem(item, true))}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    return null;
   }
 
   return (
@@ -252,42 +396,16 @@ export function Sidebar({ isOpen = false, onClose, collapsed = false, onToggleCo
               </button>
             )}
 
-            {/* Section items */}
+            {/* Section content */}
             <div
               className={cn(
                 "overflow-hidden transition-all duration-200",
                 collapsed || expanded[section.id]
-                  ? "max-h-[500px] opacity-100"
+                  ? "max-h-[1000px] opacity-100"
                   : "max-h-0 opacity-0"
               )}
             >
-              <div className={cn(
-                "space-y-0.5",
-                collapsed ? "px-1.5 pb-0.5" : "px-2 pb-1"
-              )}>
-                {section.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    onClick={() => onClose?.()}
-                    title={collapsed ? item.label : undefined}
-                    className={({ isActive }) =>
-                      cn(
-                        "flex items-center rounded-lg font-medium transition-all",
-                        collapsed
-                          ? "justify-center p-2.5"
-                          : "gap-2.5 px-3 py-2 text-[13px]",
-                        isActive
-                          ? "bg-primary/10 text-primary"
-                          : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
-                      )
-                    }
-                  >
-                    <item.icon className="w-4 h-4 shrink-0" />
-                    {!collapsed && <span className="truncate">{item.label}</span>}
-                  </NavLink>
-                ))}
-              </div>
+              {renderSectionContent(section)}
             </div>
           </div>
         ))}
@@ -318,7 +436,7 @@ export function Sidebar({ isOpen = false, onClose, collapsed = false, onToggleCo
       {!collapsed && (
         <div className="px-4 py-3 border-t border-border">
           <p className="text-[10px] text-foreground-muted/50">
-            EZDrive Supervision v1.0
+            EZDrive Supervision v2.0
           </p>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   Clock,
   Server,
+  Wrench,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,7 @@ import { KPISkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { PageHelp } from "@/components/ui/PageHelp";
 import type { Station } from "@/types/station";
+import { MaintenancePage } from "@/components/maintenance/MaintenancePage";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -132,7 +134,15 @@ function computeEnergy(tx: OcppTransaction): string {
 
 // ── Page component ─────────────────────────────────────────
 
+type MonitoringTab = "realtime" | "maintenance";
+
+const MONITORING_TABS: { key: MonitoringTab; label: string; icon: typeof Activity }[] = [
+  { key: "realtime", label: "Temps réel", icon: Activity },
+  { key: "maintenance", label: "Maintenance & Tickets", icon: Wrench },
+];
+
 export function MonitoringPage() {
+  const [activeTab, setActiveTab] = useState<MonitoringTab>("realtime");
   const { selectedCpoId } = useCpo();
   const {
     data: stations,
@@ -183,6 +193,46 @@ export function MonitoringPage() {
       .sort((a, b) => (b.hours_in_status ?? 0) - (a.hours_in_status ?? 0));
   }, [stations]);
 
+  // ── Tab bar (shared across all states) ──
+  const tabBar = (
+    <div className="flex gap-1 border-b border-border">
+      {MONITORING_TABS.map((tab) => {
+        const isActive = activeTab === tab.key;
+        const Icon = tab.icon;
+        return (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={cn(
+              "flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors relative",
+              isActive ? "text-primary" : "text-foreground-muted hover:text-foreground"
+            )}
+          >
+            <Icon className="w-4 h-4" />
+            {tab.label}
+            {isActive && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // ── Maintenance tab ──
+  if (activeTab === "maintenance") {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-heading text-xl font-bold">Monitoring</h1>
+          <p className="text-sm text-foreground-muted mt-1">
+            Surveillance en temps r&eacute;el du r&eacute;seau
+          </p>
+        </div>
+        {tabBar}
+        <MaintenancePage />
+      </div>
+    );
+  }
+
   // ── Loading state ──
   if (isLoading) {
     return (
@@ -193,6 +243,7 @@ export function MonitoringPage() {
             Surveillance en temps r&eacute;el du r&eacute;seau
           </p>
         </div>
+        {tabBar}
         <KPISkeleton />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <TableSkeleton rows={5} />
@@ -213,6 +264,7 @@ export function MonitoringPage() {
             Surveillance en temps r&eacute;el du r&eacute;seau
           </p>
         </div>
+        {tabBar}
         <ErrorState
           message="Impossible de charger les donn&eacute;es de monitoring"
           onRetry={() => refetchStations()}
@@ -230,6 +282,8 @@ export function MonitoringPage() {
           Surveillance en temps r&eacute;el du r&eacute;seau
         </p>
       </div>
+
+      {tabBar}
 
       <PageHelp
         summary="Surveillance en temps réel des connexions et heartbeats OCPP de vos bornes"
