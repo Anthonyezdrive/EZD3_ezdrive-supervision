@@ -1,10 +1,10 @@
 // ============================================================
 // EZDrive — Drivers Page
-// View and manage consumer/driver profiles
+// View and manage consumer/driver profiles (from GFX CDR sync)
 // ============================================================
 
-import { useState, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState, useMemo, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Users,
   Search,
@@ -14,192 +14,288 @@ import {
   ChevronRight,
   UserCheck,
   UserX,
-  CreditCard,
-  Eye,
-  Plus,
+  Zap,
   X,
-  Loader2,
-  Pencil,
+  Eye,
+  Activity,
 } from "lucide-react";
-import { apiPost, apiPut } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { KPICard } from "@/components/ui/KPICard";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { SlideOver } from "@/components/ui/SlideOver";
+import { ErrorState } from "@/components/ui/ErrorState";
 import { PageHelp } from "@/components/ui/PageHelp";
+import { useCpo } from "@/contexts/CpoContext";
 
 // ── Types ─────────────────────────────────────────────────────
 
 interface Driver {
   id: string;
+  driver_external_id: string;
   full_name: string | null;
-  email: string | null;
-  phone: string | null;
-  country: string | null;
-  status: string | null;
-  stripe_customer_id: string | null;
-  is_company: boolean;
-  company_name: string | null;
-  address: string | null;
-  postal_code: string | null;
-  city: string | null;
-  account_manager: string | null;
-  validity_date: string | null;
-  cost_center: string | null;
-  siret: string | null;
-  billing_mode: string | null;
+  primary_token_uid: string | null;
+  customer_group: string | null;
+  total_sessions: number;
+  total_energy_kwh: number;
+  first_session_at: string | null;
+  last_session_at: string | null;
+  is_active: boolean;
   admin_notes: string | null;
   created_at: string;
+  cpo_id: string | null;
 }
 
 const TABS = ["Tous", "Actifs", "Inactifs"] as const;
 type Tab = (typeof TABS)[number];
 
-type SortKey = "full_name" | "email" | "country" | "status" | "created_at";
-const PAGE_SIZE = 20;
+type SortKey =
+  | "full_name"
+  | "customer_group"
+  | "total_sessions"
+  | "total_energy_kwh"
+  | "last_session_at"
+  | "first_session_at";
 
-// ── Component ─────────────────────────────────────────────────
+type SortDir = "asc" | "desc";
+const PAGE_SIZE = 25;
+
+// ── Formatters ───────────────────────────────────────────────
+
+function formatEnergy(kwh: number): string {
+  if (kwh >= 1000) return (kwh / 1000).toFixed(1) + " MWh";
+  return kwh.toFixed(1) + " kWh";
+}
+
+function formatRelativeDate(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) return "Aujourd'hui";
+  if (diffDays === 1) return "Hier";
+  if (diffDays < 7) return `Il y a ${diffDays}j`;
+  if (diffDays < 30) return `Il y a ${Math.floor(diffDays / 7)} sem.`;
+  if (diffDays < 365) return `Il y a ${Math.floor(diffDays / 30)} mois`;
+  return date.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+}
+
+function formatDate(dateStr: string): string {
+  return new Date(dateStr).toLocaleDateString("fr-FR", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function getInitials(name: string | null): string {
+  if (!name) return "?";
+  return name.split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+}
+
+function nameToHue(name: string | null): number {
+  if (!name) return 200;
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  return Math.abs(hash) % 360;
+}
+
+// ── Main Page ─────────────────────────────────────────────────
 
 export function DriversPage() {
-  const queryClient = useQueryClient();
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<Tab>("Tous");
-  const [sortKey, setSortKey] = useState<SortKey>("created_at");
-  const [sortAsc, setSortAsc] = useState(false);
-  const [page, setPage] = useState(1);
-  const [detail, setDetail] = useState<Driver | null>(null);
-  const [editDriver, setEditDriver] = useState<Driver | null>(null);
+  const { selectedCpoId } = useCpo();
 
-  // ── Fetch drivers ─────────────────────────────────────────
-
-  const { data: drivers, isLoading } = useQuery<Driver[]>({
-    queryKey: ["drivers"],
-    retry: false,
+  const {
+    data: drivers,
+    isLoading,
+    isError,
+    refetch,
+  } = useQuery<Driver[]>({
+    queryKey: ["drivers", selectedCpoId ?? "all"],
+    retry: 1,
     queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from("consumer_profiles")
-          .select("id, full_name, email, phone, country, status, stripe_customer_id, is_company, company_name, address, postal_code, city, account_manager, validity_date, cost_center, siret, billing_mode, admin_notes, created_at")
-          .order("created_at", { ascending: false });
-        if (error) {
-          console.warn("[Drivers] consumer_profiles query:", error.message);
-          return [];
+      const PAGE = 1000;
+      let allRows: Driver[] = [];
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        let query = supabase
+          .from("gfx_consumers")
+          .select("id, driver_external_id, full_name, primary_token_uid, customer_group, total_sessions, total_energy_kwh, first_session_at, last_session_at, is_active, admin_notes, created_at, cpo_id")
+          .order("total_sessions", { ascending: false })
+          .range(from, from + PAGE - 1);
+
+        if (selectedCpoId) {
+          query = query.eq("cpo_id", selectedCpoId);
         }
-        return (data ?? []) as Driver[];
-      } catch {
-        return [];
+
+        const { data, error } = await query;
+        if (error) throw error;
+        const rows = (data ?? []) as Driver[];
+        allRows = allRows.concat(rows);
+        from += PAGE;
+        hasMore = rows.length === PAGE;
       }
+
+      return allRows;
     },
   });
 
-  // ── KPIs ──────────────────────────────────────────────────
+  // ── State ──
+  const [search, setSearch] = useState("");
+  const [activeTab, setActiveTab] = useState<Tab>("Tous");
+  const [sortKey, setSortKey] = useState<SortKey>("total_sessions");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [page, setPage] = useState(1);
+  const [detail, setDetail] = useState<Driver | null>(null);
 
+  // ── KPIs ──
   const kpis = useMemo(() => {
-    if (!drivers) return { total: 0, active: 0, inactive: 0, withSubscription: 0 };
+    if (!drivers) return null;
+    const identified = drivers.filter((d) => d.full_name);
+    const active30d = drivers.filter((d) => {
+      if (!d.last_session_at) return false;
+      const diff = Date.now() - new Date(d.last_session_at).getTime();
+      return diff < 30 * 24 * 60 * 60 * 1000;
+    });
     return {
       total: drivers.length,
-      active: drivers.filter((d) => d.status === "active").length,
-      inactive: drivers.filter((d) => d.status !== "active").length,
-      withSubscription: drivers.filter((d) => !!d.stripe_customer_id).length,
+      identified: identified.length,
+      active30d: active30d.length,
+      totalEnergy: drivers.reduce((s, d) => s + (Number(d.total_energy_kwh) || 0), 0),
     };
   }, [drivers]);
 
-  // ── Filtered + sorted ─────────────────────────────────────
+  // ── Sorting ──
+  const handleSort = useCallback(
+    (key: SortKey) => {
+      if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+      else { setSortKey(key); setSortDir("desc"); }
+      setPage(1);
+    },
+    [sortKey]
+  );
 
+  // ── Filter ──
   const filtered = useMemo(() => {
     if (!drivers) return [];
     let list = [...drivers];
 
     // Tab filter
-    if (activeTab === "Actifs") list = list.filter((d) => d.status === "active");
-    else if (activeTab === "Inactifs") list = list.filter((d) => d.status !== "active");
+    if (activeTab === "Actifs") {
+      list = list.filter((d) => {
+        if (!d.last_session_at) return false;
+        return Date.now() - new Date(d.last_session_at).getTime() < 90 * 24 * 60 * 60 * 1000;
+      });
+    } else if (activeTab === "Inactifs") {
+      list = list.filter((d) => {
+        if (!d.last_session_at) return true;
+        return Date.now() - new Date(d.last_session_at).getTime() >= 90 * 24 * 60 * 60 * 1000;
+      });
+    }
 
     // Search
-    if (search) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (d) =>
-          (d.full_name ?? "").toLowerCase().includes(q) ||
-          (d.email ?? "").toLowerCase().includes(q) ||
-          (d.phone ?? "").toLowerCase().includes(q) ||
-          (d.company_name ?? "").toLowerCase().includes(q)
+    if (search.trim()) {
+      const q = search.toLowerCase().trim();
+      list = list.filter((d) =>
+        (d.full_name ?? "").toLowerCase().includes(q) ||
+        d.driver_external_id.toLowerCase().includes(q) ||
+        (d.customer_group ?? "").toLowerCase().includes(q) ||
+        (d.primary_token_uid ?? "").toLowerCase().includes(q)
       );
     }
 
-    // Sort
-    list.sort((a, b) => {
-      const av = (a[sortKey] ?? "") as string;
-      const bv = (b[sortKey] ?? "") as string;
-      return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-    });
-
     return list;
-  }, [drivers, activeTab, search, sortKey, sortAsc]);
+  }, [drivers, activeTab, search]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // ── Sort ──
+  const sorted = useMemo(() => {
+    return [...filtered].sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      let cmp: number;
+      if (typeof av === "number" && typeof bv === "number") cmp = av - bv;
+      else cmp = String(av).localeCompare(String(bv), "fr");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [filtered, sortKey, sortDir]);
 
-  // ── Sort handler ──────────────────────────────────────────
+  // ── Pagination ──
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const paginated = sorted.slice(start, start + PAGE_SIZE);
 
-  function handleSort(key: SortKey) {
-    if (sortKey === key) setSortAsc(!sortAsc);
-    else { setSortKey(key); setSortAsc(true); }
-  }
+  const handleSearchChange = useCallback((value: string) => { setSearch(value); setPage(1); }, []);
 
-  // ── Loading ───────────────────────────────────────────────
-
-  if (isLoading) {
+  if (isError) {
     return (
-      <div className="p-6 space-y-6">
-        <Skeleton className="h-8 w-48" />
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24 rounded-2xl" />)}
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-heading text-xl font-bold text-foreground">Conducteurs</h1>
+          <p className="text-sm text-foreground-muted mt-1">Profils des conducteurs extraits des sessions de charge</p>
         </div>
-        <Skeleton className="h-96 rounded-2xl" />
+        <ErrorState message="Impossible de charger les conducteurs" onRetry={() => refetch()} />
       </div>
     );
   }
 
+  const SortIcon = ({ col }: { col: SortKey }) => {
+    if (col !== sortKey) return null;
+    return sortDir === "asc" ? <ChevronUp className="w-3.5 h-3.5 inline ml-0.5" /> : <ChevronDown className="w-3.5 h-3.5 inline ml-0.5" />;
+  };
+
+  const thClass = "px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors select-none whitespace-nowrap";
+
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-heading font-bold text-foreground">Conducteurs</h1>
-          <p className="text-sm text-foreground-muted mt-1">
-            Gestion des profils conducteurs inscrits sur la plateforme
+          <h1 className="font-heading text-xl font-bold text-foreground">Conducteurs</h1>
+          <p className="text-sm text-foreground-muted mt-0.5">
+            Profils extraits des sessions de charge (CDRs)
           </p>
         </div>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Ajouter conducteur
-        </button>
+        {!isLoading && drivers && (
+          <span className="inline-flex items-center gap-1.5 bg-primary/10 text-primary border border-primary/25 rounded-lg px-3 py-1.5 text-xs font-semibold">
+            <Users className="w-3.5 h-3.5" />
+            {drivers.length.toLocaleString("fr-FR")} conducteur{drivers.length !== 1 ? "s" : ""}
+          </span>
+        )}
       </div>
 
       <PageHelp
-        summary="Gestion des conducteurs (utilisateurs finaux) pour le roaming eMSP"
+        summary="Gestion des conducteurs (utilisateurs finaux) identifiés via les sessions de charge"
         items={[
-          { label: "Conducteur", description: "Un utilisateur final qui charge son véhicule, identifié par un token (badge RFID ou app)." },
-          { label: "Token", description: "Moyen d'identification du conducteur : badge RFID, QR code, ou identifiant d'application." },
-          { label: "Autorisations", description: "Bornes et réseaux sur lesquels ce conducteur est autorisé à charger." },
-          { label: "Historique", description: "Sessions de charge effectuées par ce conducteur sur tous les réseaux accessibles." },
+          { label: "Conducteur", description: "Identifié par son driver_external_id dans les CDRs (nom, UUID, ou ID GFX App)." },
+          { label: "Token", description: "Badge RFID ou identifiant d'application utilisé pour s'authentifier sur les bornes." },
+          { label: "Groupe", description: "Client B2B ou customer_external_id rattaché au conducteur." },
+          { label: "Actif/Inactif", description: "Un conducteur est considéré actif s'il a chargé dans les 90 derniers jours." },
         ]}
       />
 
       {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KPICard label="Total conducteurs" value={kpis.total} icon={Users} color="#6366f1" />
-        <KPICard label="Actifs" value={kpis.active} icon={UserCheck} color="#10b981" />
-        <KPICard label="Inactifs" value={kpis.inactive} icon={UserX} color="#ef4444" />
-        <KPICard label="Avec abonnement" value={kpis.withSubscription} icon={CreditCard} color="#3b82f6" />
-      </div>
+      {isLoading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="bg-surface border border-border rounded-2xl p-5 h-[88px] animate-pulse" />
+          ))}
+        </div>
+      ) : kpis ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <KPICard label="Total conducteurs" value={kpis.total.toLocaleString("fr-FR")} icon={Users} color="#6366f1" />
+          <KPICard label="Identifiés" value={kpis.identified.toLocaleString("fr-FR")} icon={UserCheck} color="#10b981" />
+          <KPICard label="Actifs (30j)" value={kpis.active30d.toLocaleString("fr-FR")} icon={Activity} color="#f59e0b" />
+          <KPICard label="Énergie totale" value={formatEnergy(kpis.totalEnergy)} icon={Zap} color="#8b5cf6" />
+        </div>
+      ) : null}
 
-      {/* Search + Tabs */}
+      {/* Tabs + Search */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex gap-1 border-b border-border">
           {TABS.map((tab) => (
@@ -208,596 +304,278 @@ export function DriversPage() {
               onClick={() => { setActiveTab(tab); setPage(1); }}
               className={cn(
                 "px-4 py-2.5 text-sm font-medium transition-colors relative",
-                activeTab === tab
-                  ? "text-primary"
-                  : "text-foreground-muted hover:text-foreground"
+                activeTab === tab ? "text-primary" : "text-foreground-muted hover:text-foreground"
               )}
             >
               {tab}
-              {activeTab === tab && (
-                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
-              )}
+              {activeTab === tab && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />}
             </button>
           ))}
         </div>
 
-        <div className="relative w-full sm:w-72">
+        <div className="relative w-full sm:w-80">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
           <input
             type="text"
-            placeholder="Rechercher un conducteur..."
+            placeholder="Rechercher par nom, token, groupe..."
             value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="w-full pl-10 pr-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
+            onChange={(e) => handleSearchChange(e.target.value)}
+            className="w-full pl-9 pr-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus transition-colors"
           />
         </div>
       </div>
 
       {/* Table */}
-      <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-surface-elevated/50">
-                <th className="text-left px-4 py-3 font-semibold text-foreground-muted">État</th>
-                <ThSort label="Nom" col="full_name" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                <ThSort label="Email" col="email" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                <th className="text-left px-4 py-3 font-semibold text-foreground-muted">Téléphone</th>
-                <ThSort label="Pays" col="country" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                <th className="text-left px-4 py-3 font-semibold text-foreground-muted">Entreprise</th>
-                <ThSort label="Inscrit le" col="created_at" sortKey={sortKey} sortAsc={sortAsc} onSort={handleSort} />
-                <th className="text-right px-4 py-3 font-semibold text-foreground-muted">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {paged.length === 0 ? (
+      {isLoading ? (
+        <div className="bg-surface border border-border rounded-2xl p-6 h-[400px] animate-pulse" />
+      ) : sorted.length === 0 && search.trim() ? (
+        <div className="flex flex-col items-center justify-center h-48 bg-surface border border-border rounded-2xl">
+          <Search className="w-8 h-8 text-foreground-muted mb-3" />
+          <p className="text-foreground font-medium">Aucun résultat</p>
+          <p className="text-sm text-foreground-muted mt-1">Aucun conducteur ne correspond à « {search} »</p>
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-56 bg-surface border border-border rounded-2xl">
+          <UserX className="w-10 h-10 text-foreground-muted mb-4" />
+          <p className="text-foreground font-medium text-lg">Aucun conducteur</p>
+          <p className="text-sm text-foreground-muted mt-1">Les conducteurs apparaîtront après synchronisation des CDRs.</p>
+        </div>
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-border">
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-foreground-muted">
-                    Aucun conducteur trouvé
-                  </td>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">État</th>
+                  <th className={thClass} onClick={() => handleSort("full_name")}>Conducteur <SortIcon col="full_name" /></th>
+                  <th className={thClass} onClick={() => handleSort("customer_group")}>Groupe <SortIcon col="customer_group" /></th>
+                  <th className={cn(thClass, "text-right")} onClick={() => handleSort("total_sessions")}>Sessions <SortIcon col="total_sessions" /></th>
+                  <th className={cn(thClass, "text-right")} onClick={() => handleSort("total_energy_kwh")}>Énergie <SortIcon col="total_energy_kwh" /></th>
+                  <th className={thClass} onClick={() => handleSort("last_session_at")}>Dernière charge <SortIcon col="last_session_at" /></th>
+                  <th className={thClass} onClick={() => handleSort("first_session_at")}>Première charge <SortIcon col="first_session_at" /></th>
                 </tr>
-              ) : (
-                paged.map((d) => (
-                  <tr key={d.id} className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors">
-                    <td className="px-4 py-3">
-                      <span
-                        className={cn(
+              </thead>
+              <tbody className="divide-y divide-border">
+                {paginated.map((driver) => {
+                  const hue = nameToHue(driver.full_name ?? driver.driver_external_id);
+                  const displayName = driver.full_name || driver.driver_external_id;
+                  const isActive = driver.last_session_at
+                    ? Date.now() - new Date(driver.last_session_at).getTime() < 90 * 24 * 60 * 60 * 1000
+                    : false;
+
+                  return (
+                    <tr
+                      key={driver.id}
+                      className="hover:bg-surface-elevated/50 transition-colors cursor-pointer"
+                      onClick={() => setDetail(driver)}
+                    >
+                      <td className="px-4 py-3">
+                        <span className={cn(
                           "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold",
-                          d.status === "active"
-                            ? "bg-emerald-500/10 text-emerald-400"
-                            : "bg-red-500/10 text-red-400"
-                        )}
-                      >
-                        {d.status === "active" ? "Actif" : "Inactif"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 font-medium text-foreground">{d.full_name ?? "—"}</td>
-                    <td className="px-4 py-3 text-foreground-muted">{d.email ?? "—"}</td>
-                    <td className="px-4 py-3 text-foreground-muted">{d.phone ?? "—"}</td>
-                    <td className="px-4 py-3 text-foreground-muted">{d.country ?? "—"}</td>
-                    <td className="px-4 py-3 text-foreground-muted">{d.is_company ? d.company_name ?? "Oui" : "—"}</td>
-                    <td className="px-4 py-3 text-foreground-muted">
-                      {new Date(d.created_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" })}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => setEditDriver(d)}
-                          className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                          title="Modifier"
-                        >
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setDetail(d)}
-                          className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                          title="Voir détail"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-          <span className="text-xs text-foreground-muted">
-            {filtered.length} conducteur{filtered.length > 1 ? "s" : ""}
-          </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="p-1.5 rounded-lg border border-border hover:bg-surface-elevated disabled:opacity-30 transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs text-foreground-muted">{page} / {totalPages}</span>
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="p-1.5 rounded-lg border border-border hover:bg-surface-elevated disabled:opacity-30 transition-colors"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {showAddModal && (
-        <AddDriverModal
-          onClose={() => setShowAddModal(false)}
-          onCreated={() => {
-            setShowAddModal(false);
-            queryClient.invalidateQueries({ queryKey: ["drivers"] });
-          }}
-        />
-      )}
-
-      {/* Detail SlideOver */}
-      <SlideOver
-        open={!!detail}
-        onClose={() => setDetail(null)}
-        title="Détail conducteur"
-        subtitle={detail?.full_name ?? ""}
-      >
-        {detail && (
-          <div className="p-6 space-y-6">
-            <DetailSection title="Informations personnelles">
-              <DetailRow label="Nom complet" value={detail.full_name ?? "—"} />
-              <DetailRow label="Email" value={detail.email ?? "—"} />
-              <DetailRow label="Téléphone" value={detail.phone ?? "—"} />
-              <DetailRow label="Pays" value={detail.country ?? "—"} />
-              <DetailRow
-                label="Statut"
-                value={
-                  <span className={cn(
-                    "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold",
-                    detail.status === "active" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
-                  )}>
-                    {detail.status === "active" ? "Actif" : "Inactif"}
-                  </span>
-                }
-              />
-            </DetailSection>
-
-            {detail.is_company && (
-              <DetailSection title="Entreprise">
-                <DetailRow label="Nom entreprise" value={detail.company_name ?? "—"} />
-              </DetailSection>
-            )}
-
-            <DetailSection title="Facturation">
-              <DetailRow label="Stripe Customer" value={detail.stripe_customer_id ?? "Non configuré"} />
-            </DetailSection>
-
-            <DetailSection title="Métadonnées">
-              <DetailRow label="ID" value={detail.id} />
-              <DetailRow
-                label="Inscrit le"
-                value={new Date(detail.created_at).toLocaleDateString("fr-FR", {
-                  day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+                          isActive ? "bg-emerald-500/10 text-emerald-400" : "bg-foreground-muted/10 text-foreground-muted"
+                        )}>
+                          {isActive ? "Actif" : "Inactif"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className="w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                            style={{ backgroundColor: `hsl(${hue}, 45%, 25%)`, color: `hsl(${hue}, 70%, 75%)` }}
+                          >
+                            {getInitials(driver.full_name ?? driver.driver_external_id)}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-foreground truncate max-w-[200px]">{displayName}</p>
+                            {driver.primary_token_uid && (
+                              <p className="text-xs text-foreground-muted truncate font-mono max-w-[200px]">{driver.primary_token_uid}</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground-muted truncate max-w-[180px]">
+                        {driver.customer_group ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground-muted text-right tabular-nums">
+                        {driver.total_sessions.toLocaleString("fr-FR")}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground-muted text-right tabular-nums">
+                        {formatEnergy(Number(driver.total_energy_kwh))}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground-muted whitespace-nowrap">
+                        {driver.last_session_at ? formatRelativeDate(driver.last_session_at) : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-foreground-muted whitespace-nowrap">
+                        {driver.first_session_at ? formatRelativeDate(driver.first_session_at) : "—"}
+                      </td>
+                    </tr>
+                  );
                 })}
-              />
-            </DetailSection>
+              </tbody>
+            </table>
           </div>
-        )}
-      </SlideOver>
 
-      {/* Edit Driver Modal */}
-      {editDriver && (
-        <EditDriverModal
-          driver={editDriver}
-          onClose={() => setEditDriver(null)}
-          onSaved={() => {
-            setEditDriver(null);
-            queryClient.invalidateQueries({ queryKey: ["drivers"] });
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-// ── Reusable sub-components ──────────────────────────────────
-
-function ThSort({
-  label,
-  col,
-  sortKey,
-  sortAsc,
-  onSort,
-}: {
-  label: string;
-  col: SortKey;
-  sortKey: SortKey;
-  sortAsc: boolean;
-  onSort: (key: SortKey) => void;
-}) {
-  return (
-    <th
-      className="text-left px-4 py-3 font-semibold text-foreground-muted cursor-pointer select-none hover:text-foreground transition-colors"
-      onClick={() => onSort(col)}
-    >
-      <span className="inline-flex items-center gap-1">
-        {label}
-        {sortKey === col ? (
-          sortAsc ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />
-        ) : (
-          <ChevronDown className="w-3 h-3 opacity-30" />
-        )}
-      </span>
-    </th>
-  );
-}
-
-function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h3 className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">{title}</h3>
-      <div className="space-y-2.5">{children}</div>
-    </div>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-foreground-muted">{label}</span>
-      <span className="text-foreground font-medium text-right">{value}</span>
-    </div>
-  );
-}
-
-function AddDriverModal({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const [form, setForm] = useState({
-    full_name: "",
-    email: "",
-    phone: "",
-    country: "FR",
-    is_company: false,
-    company_name: "",
-    user_type: "INDIVIDUAL" as "INDIVIDUAL" | "BUSINESS" | "FLEET_MANAGER",
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.email.trim()) { setError("L'email est obligatoire"); return; }
-    if (!form.full_name.trim()) { setError("Le nom est obligatoire"); return; }
-    setLoading(true);
-    setError(null);
-    try {
-      await apiPost("admin/consumer", {
-        email: form.email.trim(),
-        full_name: form.full_name.trim(),
-        phone: form.phone.trim() || null,
-        user_type: form.user_type,
-        is_company: form.is_company,
-        company_name: form.company_name.trim() || null,
-      });
-      onCreated();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erreur inconnue");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
-        <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl">
-          <div className="flex items-center justify-between p-5 border-b border-border">
-            <h2 className="font-heading font-bold text-lg">Ajouter un conducteur</h2>
-            <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
-              <X className="w-5 h-5 text-foreground-muted" />
-            </button>
-          </div>
-          <form onSubmit={handleSubmit} className="p-5 space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Nom complet *</label>
-                <input
-                  type="text"
-                  value={form.full_name}
-                  onChange={(e) => setForm({ ...form, full_name: e.target.value })}
-                  placeholder="Jean Dupont"
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Email *</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="jean@exemple.fr"
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Téléphone</label>
-                <input
-                  type="tel"
-                  value={form.phone}
-                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                  placeholder="+33 6 00 00 00 00"
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
-                />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Pays</label>
-                <select
-                  value={form.country}
-                  onChange={(e) => setForm({ ...form, country: e.target.value })}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+              <span className="text-xs text-foreground-muted">
+                {start + 1}–{Math.min(start + PAGE_SIZE, sorted.length)} sur {sorted.length} conducteur{sorted.length !== 1 ? "s" : ""}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage === 1}
+                  className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 >
-                  <option value="FR">France</option>
-                  <option value="RE">La Réunion</option>
-                  <option value="GP">Guadeloupe</option>
-                  <option value="MQ">Martinique</option>
-                  <option value="BE">Belgique</option>
-                  <option value="CH">Suisse</option>
-                  <option value="LU">Luxembourg</option>
-                </select>
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
+                  .reduce<(number | "…")[]>((acc, p, idx, arr) => {
+                    if (idx > 0 && p - (arr[idx - 1] as number) > 1) acc.push("…");
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) =>
+                    p === "…" ? (
+                      <span key={"e" + i} className="px-1.5 text-xs text-foreground-muted">…</span>
+                    ) : (
+                      <button
+                        key={p}
+                        onClick={() => setPage(p as number)}
+                        className={`min-w-[2rem] h-8 px-2 rounded-lg text-xs font-medium transition-colors ${
+                          safePage === p
+                            ? "bg-primary/15 text-primary border border-primary/30"
+                            : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    )
+                  )}
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage === totalPages}
+                  className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Detail Drawer */}
+      {detail && <DriverDetailDrawer driver={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+// ── Driver Detail Drawer ──────────────────────────────────────
+
+function DriverDetailDrawer({ driver, onClose }: { driver: Driver; onClose: () => void }) {
+  const hue = nameToHue(driver.full_name ?? driver.driver_external_id);
+  const displayName = driver.full_name || driver.driver_external_id;
+  const isActive = driver.last_session_at
+    ? Date.now() - new Date(driver.last_session_at).getTime() < 90 * 24 * 60 * 60 * 1000
+    : false;
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} />
+      <div className="fixed right-0 top-0 h-full w-full max-w-md bg-surface border-l border-border z-50 overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
+              style={{ backgroundColor: `hsl(${hue}, 45%, 25%)`, color: `hsl(${hue}, 70%, 75%)` }}
+            >
+              {getInitials(driver.full_name ?? driver.driver_external_id)}
             </div>
             <div>
-              <label className="block text-xs text-foreground-muted mb-1.5">Type</label>
-              <select
-                value={form.user_type}
-                onChange={(e) => setForm({ ...form, user_type: e.target.value as typeof form.user_type })}
-                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
-              >
-                <option value="INDIVIDUAL">Particulier</option>
-                <option value="BUSINESS">Entreprise</option>
-                <option value="FLEET_MANAGER">Gestionnaire de flotte</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="drv_is_company"
-                checked={form.is_company}
-                onChange={(e) => setForm({ ...form, is_company: e.target.checked })}
-                className="w-4 h-4 accent-primary"
-              />
-              <label htmlFor="drv_is_company" className="text-sm text-foreground">Compte entreprise</label>
-            </div>
-            {form.is_company && (
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Nom de l'entreprise</label>
-                <input
-                  type="text"
-                  value={form.company_name}
-                  onChange={(e) => setForm({ ...form, company_name: e.target.value })}
-                  placeholder="Nom de la société"
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50"
-                />
+              <h2 className="font-heading font-bold text-base">{displayName}</h2>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className={cn(
+                  "inline-flex px-2 py-0.5 rounded-full text-xs font-semibold",
+                  isActive ? "bg-emerald-500/10 text-emerald-400" : "bg-foreground-muted/10 text-foreground-muted"
+                )}>
+                  {isActive ? "Actif" : "Inactif"}
+                </span>
+                {driver.customer_group && (
+                  <span className="text-xs text-foreground-muted">{driver.customer_group}</span>
+                )}
               </div>
-            )}
-            {error && (
-              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
-            )}
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">
-                Annuler
-              </button>
-              <button
-                type="submit"
-                disabled={loading}
-                className="flex-1 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-              >
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Créer le conducteur
-              </button>
             </div>
-          </form>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
+            <X className="w-5 h-5 text-foreground-muted" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* Activité */}
+          <div>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Activité</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="bg-surface-elevated border border-border rounded-xl p-3 text-center">
+                <p className="text-xl font-bold text-foreground">{driver.total_sessions.toLocaleString("fr-FR")}</p>
+                <p className="text-xs text-foreground-muted mt-0.5">Sessions</p>
+              </div>
+              <div className="bg-surface-elevated border border-border rounded-xl p-3 text-center">
+                <p className="text-xl font-bold text-foreground">{formatEnergy(Number(driver.total_energy_kwh))}</p>
+                <p className="text-xs text-foreground-muted mt-0.5">Énergie</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Informations */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Informations</p>
+            <DetailItem label="Groupe client" value={driver.customer_group ?? "—"} />
+            <DetailItem label="Token principal" value={driver.primary_token_uid ?? "—"} />
+            {driver.first_session_at && (
+              <DetailItem label="Première charge" value={formatDate(driver.first_session_at)} />
+            )}
+            {driver.last_session_at && (
+              <DetailItem label="Dernière charge" value={formatRelativeDate(driver.last_session_at)} />
+            )}
+          </div>
+
+          {/* ID GreenFlux */}
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Identifiant externe</p>
+            <p className="text-xs text-foreground font-mono bg-surface-elevated border border-border rounded-lg px-3 py-2 break-all">
+              {driver.driver_external_id}
+            </p>
+          </div>
+
+          {/* Notes */}
+          {driver.admin_notes && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Notes</p>
+              <p className="text-sm text-foreground-muted">{driver.admin_notes}</p>
+            </div>
+          )}
+
+          {/* ID technique */}
+          <div className="pt-3 border-t border-border">
+            <p className="text-xs text-foreground-muted">
+              ID: <span className="font-mono text-foreground">{driver.id}</span>
+            </p>
+          </div>
         </div>
       </div>
     </>
   );
 }
 
-// ── Edit Driver Modal ─────────────────────────────────────────
-
-function EditDriverModal({
-  driver,
-  onClose,
-  onSaved,
-}: {
-  driver: Driver;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({
-    full_name: driver.full_name ?? "",
-    phone: driver.phone ?? "",
-    country: driver.country ?? "FR",
-    user_type: "INDIVIDUAL" as "INDIVIDUAL" | "BUSINESS" | "FLEET_MANAGER",
-    is_company: driver.is_company,
-    company_name: driver.company_name ?? "",
-    address: driver.address ?? "",
-    postal_code: driver.postal_code ?? "",
-    city: driver.city ?? "",
-    account_manager: driver.account_manager ?? "",
-    validity_date: driver.validity_date ? driver.validity_date.slice(0, 10) : "",
-    cost_center: driver.cost_center ?? "",
-    siret: driver.siret ?? "",
-    billing_mode: (driver.billing_mode ?? "POSTPAID") as "PREPAID" | "POSTPAID",
-    status: (driver.status ?? "active") as "active" | "inactive" | "suspended",
-    admin_notes: driver.admin_notes ?? "",
-  });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const inputClass = "w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50";
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    try {
-      await apiPut(`customers/${driver.id}`, {
-        full_name: form.full_name.trim() || null,
-        phone: form.phone.trim() || null,
-        is_company: form.is_company,
-        company_name: form.company_name.trim() || null,
-        address: form.address.trim() || null,
-        postal_code: form.postal_code.trim() || null,
-        city: form.city.trim() || null,
-        country: form.country || null,
-        account_manager: form.account_manager.trim() || null,
-        validity_date: form.validity_date || null,
-        cost_center: form.cost_center.trim() || null,
-        siret: form.siret.trim() || null,
-        billing_mode: form.billing_mode,
-        status: form.status,
-        admin_notes: form.admin_notes.trim() || null,
-      });
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Erreur inconnue");
-    } finally {
-      setLoading(false);
-    }
-  }
-
+function DetailItem({ label, value }: { label: string; value: string }) {
   return (
-    <>
-      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
-        <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col">
-          <div className="flex items-center justify-between p-5 border-b border-border shrink-0">
-            <h2 className="font-heading font-bold text-lg">Modifier le conducteur</h2>
-            <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
-              <X className="w-5 h-5 text-foreground-muted" />
-            </button>
-          </div>
-          <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto flex-1">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Nom complet</label>
-                <input type="text" value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Téléphone</label>
-                <input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className={inputClass} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Pays</label>
-                <select value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className={inputClass}>
-                  <option value="FR">France</option>
-                  <option value="RE">La Réunion</option>
-                  <option value="GP">Guadeloupe</option>
-                  <option value="MQ">Martinique</option>
-                  <option value="GF">Guyane</option>
-                  <option value="BE">Belgique</option>
-                  <option value="CH">Suisse</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Statut</label>
-                <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as typeof form.status })} className={inputClass}>
-                  <option value="active">Actif</option>
-                  <option value="inactive">Inactif</option>
-                  <option value="suspended">Suspendu</option>
-                </select>
-              </div>
-            </div>
-            {/* Adresse */}
-            <div>
-              <label className="block text-xs text-foreground-muted mb-1.5">Adresse</label>
-              <input type="text" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Code postal</label>
-                <input type="text" value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Ville</label>
-                <input type="text" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className={inputClass} />
-              </div>
-            </div>
-            {/* Gestion */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Gestionnaire</label>
-                <input type="text" value={form.account_manager} onChange={(e) => setForm({ ...form, account_manager: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Validité</label>
-                <input type="date" value={form.validity_date} onChange={(e) => setForm({ ...form, validity_date: e.target.value })} className={inputClass} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Centre de coût</label>
-                <input type="text" value={form.cost_center} onChange={(e) => setForm({ ...form, cost_center: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Facturation</label>
-                <select value={form.billing_mode} onChange={(e) => setForm({ ...form, billing_mode: e.target.value as typeof form.billing_mode })} className={inputClass}>
-                  <option value="POSTPAID">Post-payé</option>
-                  <option value="PREPAID">Prépayé</option>
-                </select>
-              </div>
-            </div>
-            {/* Entreprise */}
-            <div className="flex items-center gap-2">
-              <input type="checkbox" id="edit_drv_company" checked={form.is_company}
-                onChange={(e) => setForm({ ...form, is_company: e.target.checked })} className="w-4 h-4 accent-primary" />
-              <label htmlFor="edit_drv_company" className="text-sm text-foreground">Compte entreprise</label>
-            </div>
-            {form.is_company && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">Entreprise</label>
-                  <input type="text" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} className={inputClass} />
-                </div>
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">SIRET</label>
-                  <input type="text" value={form.siret} onChange={(e) => setForm({ ...form, siret: e.target.value })} className={inputClass} />
-                </div>
-              </div>
-            )}
-            {/* Notes */}
-            <div>
-              <label className="block text-xs text-foreground-muted mb-1.5">Notes</label>
-              <textarea value={form.admin_notes} onChange={(e) => setForm({ ...form, admin_notes: e.target.value })}
-                rows={2} className={`${inputClass} resize-none`} />
-            </div>
-            {error && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">Annuler</button>
-              <button type="submit" disabled={loading}
-                className="flex-1 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Enregistrer
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </>
+    <div className="flex items-center justify-between text-sm py-1.5 border-b border-border/50 last:border-0">
+      <span className="text-foreground-muted">{label}</span>
+      <span className="text-foreground font-medium">{value}</span>
+    </div>
   );
 }
