@@ -78,8 +78,18 @@ interface RoamingAgreement {
 interface ReimbursementRule {
   id: string;
   status: "active" | "expired" | "planned";
+  tariff_code: string | null;
+  country_code: string | null;
   cpo_name: string | null;
+  cpo_entity: string | null;
   emsp_name: string | null;
+  emsp_entity: string | null;
+  cpo_network: { name: string } | null;
+  cpo_contract: { name: string } | null;
+  emsp_network: { name: string } | null;
+  emsp_contract: { name: string } | null;
+  retail_price: string | null;
+  restrictions: string | null;
   price_per_kwh: number;
   price_per_min: number;
   start_fee: number;
@@ -1196,54 +1206,120 @@ function AgreementsTab({ networkId }: { networkId: string }) {
   );
 }
 
-// ── Tab: Regles de facturation en gros ────────────────────────
+// ── Tab: Regles de facturation en gros (GreenFlux-style) ──────
+
+type BillingFilterTab = "all" | "network" | "contract" | "agreement";
 
 function BillingTab({ networkId }: { networkId: string }) {
-  const [filterTab, setFilterTab] = useState<"all" | "active" | "expired">("all");
+  const [filterTab, setFilterTab] = useState<BillingFilterTab>("all");
+  const [search, setSearch] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [openActions, setOpenActions] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
 
   const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
     queryKey: ["billing-rules-for-network", networkId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("reimbursement_rules")
-        .select("*")
+        .select(`
+          id, status, tariff_code, country_code,
+          cpo_name, cpo_entity, emsp_name, emsp_entity,
+          retail_price, restrictions,
+          price_per_kwh, price_per_min, start_fee, idle_fee_per_min,
+          currency, valid_from, valid_to, remarks, updated_by, updated_at,
+          cpo_network:cpo_networks(name),
+          cpo_contract:cpo_contracts(name),
+          emsp_network:emsp_networks(name),
+          emsp_contract:emsp_contracts(name)
+        `)
         .eq("cpo_network_id", networkId)
-        .order("updated_at", { ascending: false });
+        .order("tariff_code", { ascending: true });
       if (error) return [];
-      return (data ?? []) as ReimbursementRule[];
+      return (data ?? []) as unknown as ReimbursementRule[];
     },
   });
 
+  // Expire mutation
+  const expireMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("reimbursement_rules")
+        .update({ status: "expired", valid_to: new Date().toISOString().split("T")[0] })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["billing-rules-for-network", networkId] });
+      setOpenActions(null);
+      toastSuccess("Regle expiree", "La regle a ete marquee comme expiree");
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
+  // Filter by tab
   const filtered = useMemo(() => {
     let list = rules ?? [];
-    if (filterTab === "active") list = list.filter((r) => r.status === "active");
-    else if (filterTab === "expired") list = list.filter((r) => r.status === "expired");
+    if (filterTab === "network") list = list.filter((r) => r.cpo_network?.name);
+    else if (filterTab === "contract") list = list.filter((r) => r.cpo_contract?.name);
+    else if (filterTab === "agreement") list = list.filter((r) => r.emsp_network?.name);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((r) =>
+        r.cpo_name?.toLowerCase().includes(q) ||
+        r.emsp_name?.toLowerCase().includes(q) ||
+        r.tariff_code?.toLowerCase().includes(q) ||
+        r.cpo_network?.name?.toLowerCase().includes(q) ||
+        r.emsp_network?.name?.toLowerCase().includes(q)
+      );
+    }
     return list;
-  }, [rules, filterTab]);
+  }, [rules, filterTab, search]);
 
-  const tabCounts = useMemo(() => {
-    const list = rules ?? [];
-    return {
-      all: list.length,
-      active: list.filter((r) => r.status === "active").length,
-      expired: list.filter((r) => r.status === "expired").length,
-    };
-  }, [rules]);
+  // Group by tariff_code
+  const grouped = useMemo(() => {
+    const map = new Map<string, ReimbursementRule[]>();
+    for (const r of filtered) {
+      const key = r.tariff_code ?? r.id;
+      const arr = map.get(key) ?? [];
+      arr.push(r);
+      map.set(key, arr);
+    }
+    return Array.from(map.entries());
+  }, [filtered]);
+
+  const toggleCollapse = (key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const thClass = "px-3 py-2.5 text-left text-[11px] font-semibold text-foreground-muted uppercase tracking-wider whitespace-nowrap";
 
   return (
     <div className="space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Receipt className="w-4 h-4 text-foreground-muted" />
-          <h3 className="text-sm font-semibold text-foreground">Regles de facturation en gros ({tabCounts.all})</h3>
+          <h3 className="text-sm font-semibold text-foreground">Regles de facturation</h3>
         </div>
+        <button className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-semibold hover:bg-primary/90 transition-colors">
+          <Plus className="w-3.5 h-3.5" />
+          Ajouter une regle de facturation
+        </button>
       </div>
 
+      {/* Filter tabs */}
       <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-1 w-fit">
         {[
-          { key: "all" as const, label: "Tout" },
-          { key: "active" as const, label: "Actif" },
-          { key: "expired" as const, label: "Expire" },
+          { key: "all" as BillingFilterTab, label: "Tout" },
+          { key: "network" as BillingFilterTab, label: "Reseau" },
+          { key: "contract" as BillingFilterTab, label: "Contrat" },
+          { key: "agreement" as BillingFilterTab, label: "Accord" },
         ].map((tab) => (
           <button
             key={tab.key}
@@ -1253,54 +1329,181 @@ function BillingTab({ networkId }: { networkId: string }) {
               filterTab === tab.key ? "bg-primary/15 text-primary" : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
             )}
           >
-            {tab.label} <span className="opacity-60">{tabCounts[tab.key]}</span>
+            {tab.label}
           </button>
         ))}
       </div>
 
+      {/* Search */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+        <input
+          type="text"
+          placeholder="Rechercher..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus"
+        />
+      </div>
+
       {isLoading ? (
-        <TableSkeleton rows={3} cols={8} />
-      ) : filtered.length === 0 ? (
+        <TableSkeleton rows={5} cols={10} />
+      ) : grouped.length === 0 ? (
         <EmptyState icon={Receipt} message="Aucune regle de facturation en gros" />
       ) : (
         <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          {/* Table header */}
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="border-b border-border">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Statut</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">CPO</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">eMSP</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-foreground-muted uppercase">Prix/kWh</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-foreground-muted uppercase">Prix/min</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-foreground-muted uppercase">Frais demarrage</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-foreground-muted uppercase">Frais stationnement/min</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Validite</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Remarques</th>
+                  <th className={thClass}>Reseau CPO</th>
+                  <th className={thClass}>Contrat CPO</th>
+                  <th className={thClass}>Pays</th>
+                  <th className={thClass}>CPO</th>
+                  <th className={thClass}>Reseau eMSP</th>
+                  <th className={thClass}>Contrat eMSP</th>
+                  <th className={thClass}>eMSP</th>
+                  <th className={thClass}>Forfait de vente au detail</th>
+                  <th className={thClass}>Restrictions</th>
+                  <th className={thClass}>Date debut</th>
+                  <th className={cn(thClass, "text-right w-20")} />
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border">
-                {filtered.map((r) => (
-                  <tr key={r.id} className="hover:bg-surface-elevated/50 transition-colors">
-                    <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                    <td className="px-4 py-3 text-sm text-foreground font-medium">{r.cpo_name ?? "\u2014"}</td>
-                    <td className="px-4 py-3 text-sm text-foreground">{r.emsp_name ?? "\u2014"}</td>
-                    <td className="px-4 py-3 text-sm text-foreground tabular-nums text-right">{r.price_per_kwh.toFixed(4)} {r.currency}</td>
-                    <td className="px-4 py-3 text-sm text-foreground tabular-nums text-right">{r.price_per_min.toFixed(4)} {r.currency}</td>
-                    <td className="px-4 py-3 text-sm text-foreground tabular-nums text-right">{r.start_fee.toFixed(2)} {r.currency}</td>
-                    <td className="px-4 py-3 text-sm text-foreground tabular-nums text-right">{r.idle_fee_per_min.toFixed(4)} {r.currency}</td>
-                    <td className="px-4 py-3 text-sm text-foreground-muted whitespace-nowrap">
-                      {formatDate(r.valid_from)} \u2192 {r.valid_to ? formatDate(r.valid_to) : "Indefinie"}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-foreground-muted truncate max-w-[200px]">{r.remarks ?? "\u2014"}</td>
-                  </tr>
-                ))}
+              <tbody>
+                {grouped.map(([tariffCode, groupRules]) => {
+                  const isCollapsed = collapsed.has(tariffCode);
+                  const currency = groupRules[0]?.currency ?? "EUR";
+                  return (
+                    <BillingGroup
+                      key={tariffCode}
+                      tariffCode={tariffCode}
+                      currency={currency}
+                      rules={groupRules}
+                      isCollapsed={isCollapsed}
+                      onToggle={() => toggleCollapse(tariffCode)}
+                      openActions={openActions}
+                      onOpenActions={setOpenActions}
+                      onExpire={(id) => expireMutation.mutate(id)}
+                    />
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+// ── Billing Group (collapsible tariff code section) ───────────
+
+function BillingGroup({
+  tariffCode,
+  currency,
+  rules,
+  isCollapsed,
+  onToggle,
+  openActions,
+  onOpenActions,
+  onExpire,
+}: {
+  tariffCode: string;
+  currency: string;
+  rules: ReimbursementRule[];
+  isCollapsed: boolean;
+  onToggle: () => void;
+  openActions: string | null;
+  onOpenActions: (id: string | null) => void;
+  onExpire: (id: string) => void;
+}) {
+  return (
+    <>
+      {/* Group header */}
+      <tr
+        className="bg-surface-elevated/50 border-t border-b border-border cursor-pointer hover:bg-surface-elevated/80 transition-colors"
+        onClick={onToggle}
+      >
+        <td colSpan={11} className="px-4 py-2.5">
+          <div className="flex items-center gap-2">
+            <ChevronRight
+              className={cn(
+                "w-4 h-4 text-foreground-muted transition-transform",
+                !isCollapsed && "rotate-90"
+              )}
+            />
+            <span className="text-sm font-medium text-foreground">
+              Code tarifaire: {tariffCode}
+            </span>
+            <span className="text-xs text-foreground-muted">({currency})</span>
+          </div>
+        </td>
+      </tr>
+
+      {/* Group rows */}
+      {!isCollapsed && rules.map((r) => (
+        <tr key={r.id} className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors">
+          <td className="px-3 py-2.5 text-sm text-foreground">{r.cpo_network?.name ?? r.cpo_name ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.cpo_contract?.name ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.country_code ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.cpo_entity ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground">{r.emsp_network?.name ?? r.emsp_name ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.emsp_contract?.name ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.emsp_entity ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.retail_price ?? "Quelconque"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted">{r.restrictions ?? "Aucun"}</td>
+          <td className="px-3 py-2.5 text-sm text-foreground-muted whitespace-nowrap">{formatDate(r.valid_from)}</td>
+          <td className="px-3 py-2.5 text-right relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenActions(openActions === r.id ? null : r.id);
+              }}
+              className="px-3 py-1 text-xs font-medium text-primary bg-primary/10 border border-primary/25 rounded-lg hover:bg-primary/20 transition-colors"
+            >
+              actions
+              <ChevronDown className="w-3 h-3 inline ml-1" />
+            </button>
+
+            {/* Actions dropdown */}
+            {openActions === r.id && (
+              <>
+                {/* Backdrop to close */}
+                <div className="fixed inset-0 z-40" onClick={() => onOpenActions(null)} />
+                <div className="absolute right-0 top-full mt-1 z-50 w-80 bg-surface border border-border rounded-xl shadow-xl py-1 text-left">
+                  <button
+                    className="w-full px-4 py-2.5 text-sm text-foreground hover:bg-surface-elevated transition-colors text-left"
+                    onClick={() => onOpenActions(null)}
+                  >
+                    Programmer un changement de prix pour cette regle
+                  </button>
+                  <button
+                    className="w-full px-4 py-2.5 text-sm text-foreground hover:bg-surface-elevated transition-colors text-left"
+                    onClick={() => onOpenActions(null)}
+                  >
+                    Ajouter une version specifique au contrat CPO / accord de cette regle
+                  </button>
+                  <button
+                    className="w-full px-4 py-2.5 text-sm text-foreground hover:bg-surface-elevated transition-colors text-left"
+                    onClick={() => onOpenActions(null)}
+                  >
+                    Copier dans la nouvelle regle
+                  </button>
+                  <div className="border-t border-border my-1" />
+                  <button
+                    className="w-full px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 transition-colors text-left"
+                    onClick={() => { onExpire(r.id); }}
+                  >
+                    Expirer cette regle
+                  </button>
+                </div>
+              </>
+            )}
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 
