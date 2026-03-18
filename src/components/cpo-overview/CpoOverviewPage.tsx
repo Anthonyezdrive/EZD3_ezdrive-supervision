@@ -1,6 +1,6 @@
 // ============================================================
 // EZDrive — CPO Overview Page
-// Dashboard with donut charts for station/EVSE status overview
+// Dashboard with KPIs, territory breakdown, power distribution
 // ============================================================
 
 import { useState, useMemo } from "react";
@@ -8,16 +8,22 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Radio,
   Wifi,
-  Zap,
   AlertTriangle,
+  CheckCircle2,
   Search,
   ChevronLeft,
   ChevronRight,
+  MapPin,
 } from "lucide-react";
 import {
   PieChart,
   Pie,
   Cell,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
   ResponsiveContainer,
   Tooltip,
   Legend,
@@ -40,7 +46,14 @@ interface StationRow {
   is_online: boolean;
   last_synced_at: string | null;
   max_power_kw: number | null;
+  territory_id: string | null;
   connectors: { id: string; type: string; status: string; max_power_kw: number }[];
+}
+
+interface TerritoryRow {
+  id: string;
+  name: string;
+  code: string;
 }
 
 // ── Chart colors ──────────────────────────────────────────────
@@ -51,21 +64,27 @@ const CONNECTION_COLORS: Record<string, string> = {
   Inconnu: "#6b7280",
 };
 
-const EVSE_COLORS: Record<string, string> = {
-  Available: "#10b981",
-  Charging: "#3b82f6",
-  Faulted: "#ef4444",
-  Unavailable: "#f59e0b",
-  Preparing: "#8b5cf6",
-  Other: "#6b7280",
+const FRESHNESS_COLORS: Record<string, string> = {
+  "< 15 min": "#10b981",
+  "< 1h": "#3b82f6",
+  "< 24h": "#f59e0b",
+  "> 24h": "#ef4444",
+  Jamais: "#6b7280",
 };
 
-const LAST_OCPP_COLORS: Record<string, string> = {
-  "< 4h": "#10b981",
-  "< 24h": "#3b82f6",
-  "< 30j": "#f59e0b",
-  "> 30j": "#ef4444",
-  Jamais: "#6b7280",
+const POWER_COLORS: Record<string, string> = {
+  "AC lent (≤7 kW)": "#8b5cf6",
+  "AC standard (≤22 kW)": "#3b82f6",
+  "DC rapide (≤50 kW)": "#f59e0b",
+  "DC ultra-rapide (>50 kW)": "#ef4444",
+  "Non renseigné": "#6b7280",
+};
+
+const TERRITORY_COLORS: Record<string, string> = {
+  "971": "#3b82f6",
+  "972": "#10b981",
+  "973": "#f59e0b",
+  "974": "#8b5cf6",
 };
 
 const TABS = ["Vue d'ensemble", "Bornes en panne"] as const;
@@ -90,7 +109,7 @@ export function CpoOverviewPage() {
       try {
         let query = supabase
           .from("stations")
-          .select("id, name, address, city, ocpp_status, is_online, last_synced_at, max_power_kw, connectors")
+          .select("id, name, address, city, ocpp_status, is_online, last_synced_at, max_power_kw, territory_id, connectors")
           .order("name");
         if (selectedCpoId) {
           query = query.eq("cpo_id", selectedCpoId);
@@ -107,63 +126,113 @@ export function CpoOverviewPage() {
     },
   });
 
+  // ── Fetch territories ──────────────────────────────────────
+
+  const { data: territories } = useQuery<TerritoryRow[]>({
+    queryKey: ["territories"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("territories")
+        .select("id, name, code")
+        .order("code");
+      return (data ?? []) as TerritoryRow[];
+    },
+  });
+
   // ── Computed stats ────────────────────────────────────────
 
   const stats = useMemo(() => {
     if (!stations) return null;
     const total = stations.length;
     const online = stations.filter((s) => s.is_online).length;
-    const offline = stations.filter((s) => !s.is_online).length;
     const charging = stations.filter((s) => s.ocpp_status === "Charging").length;
     const faulted = stations.filter((s) => s.ocpp_status === "Faulted").length;
+    const available = stations.filter((s) => s.ocpp_status === "Available").length;
+    const availabilityPct = total > 0 ? Math.round(((available + charging) / total) * 100) : 0;
 
     // Connection chart
     const connectionData = [
       { name: "En ligne", value: online },
-      { name: "Hors ligne", value: offline },
+      { name: "Hors ligne", value: total - online },
     ].filter((d) => d.value > 0);
 
-    // EVSE status chart
-    const evseMap: Record<string, number> = {};
-    for (const s of stations) {
-      if (s.connectors && Array.isArray(s.connectors)) {
-        for (const c of s.connectors) {
-          const st = c.status || "Unknown";
-          const key = ["Available", "Charging", "Faulted", "Unavailable", "Preparing"].includes(st) ? st : "Other";
-          evseMap[key] = (evseMap[key] || 0) + 1;
-        }
-      }
-    }
-    const evseData = Object.entries(evseMap)
-      .map(([name, value]) => ({ name, value }))
-      .filter((d) => d.value > 0)
-      .sort((a, b) => b.value - a.value);
-
-    // Last OCPP communication
+    // Freshness of data (last_synced_at)
     const now = Date.now();
-    const lastOcppBuckets = { "< 4h": 0, "< 24h": 0, "< 30j": 0, "> 30j": 0, Jamais: 0 };
+    const freshnessBuckets = { "< 15 min": 0, "< 1h": 0, "< 24h": 0, "> 24h": 0, Jamais: 0 };
     for (const s of stations) {
       if (!s.last_synced_at) {
-        lastOcppBuckets["Jamais"]++;
+        freshnessBuckets["Jamais"]++;
         continue;
       }
-      const diffH = (now - new Date(s.last_synced_at).getTime()) / 3600000;
-      if (diffH < 4) lastOcppBuckets["< 4h"]++;
-      else if (diffH < 24) lastOcppBuckets["< 24h"]++;
-      else if (diffH < 720) lastOcppBuckets["< 30j"]++;
-      else lastOcppBuckets["> 30j"]++;
+      const diffMin = (now - new Date(s.last_synced_at).getTime()) / 60000;
+      if (diffMin < 15) freshnessBuckets["< 15 min"]++;
+      else if (diffMin < 60) freshnessBuckets["< 1h"]++;
+      else if (diffMin < 1440) freshnessBuckets["< 24h"]++;
+      else freshnessBuckets["> 24h"]++;
     }
-    const lastOcppData = Object.entries(lastOcppBuckets)
+    const freshnessData = Object.entries(freshnessBuckets)
       .map(([name, value]) => ({ name, value }))
       .filter((d) => d.value > 0);
+
+    // Power distribution
+    const powerBuckets = {
+      "AC lent (≤7 kW)": 0,
+      "AC standard (≤22 kW)": 0,
+      "DC rapide (≤50 kW)": 0,
+      "DC ultra-rapide (>50 kW)": 0,
+      "Non renseigné": 0,
+    };
+    for (const s of stations) {
+      const p = s.max_power_kw;
+      if (!p || p <= 0) powerBuckets["Non renseigné"]++;
+      else if (p <= 7) powerBuckets["AC lent (≤7 kW)"]++;
+      else if (p <= 22) powerBuckets["AC standard (≤22 kW)"]++;
+      else if (p <= 50) powerBuckets["DC rapide (≤50 kW)"]++;
+      else powerBuckets["DC ultra-rapide (>50 kW)"]++;
+    }
+    const powerData = Object.entries(powerBuckets)
+      .map(([name, value]) => ({ name, value }))
+      .filter((d) => d.value > 0);
+
+    // Territory breakdown
+    const territoryMap = new Map<string, { total: number; online: number; faulted: number; charging: number }>();
+    for (const s of stations) {
+      const tid = s.territory_id ?? "unknown";
+      const prev = territoryMap.get(tid) ?? { total: 0, online: 0, faulted: 0, charging: 0 };
+      prev.total++;
+      if (s.is_online) prev.online++;
+      if (s.ocpp_status === "Faulted") prev.faulted++;
+      if (s.ocpp_status === "Charging") prev.charging++;
+      territoryMap.set(tid, prev);
+    }
+    const territoryData = (territories ?? [])
+      .map((t) => {
+        const d = territoryMap.get(t.id);
+        if (!d) return null;
+        return {
+          name: t.name,
+          code: t.code,
+          "En ligne": d.online,
+          "Hors ligne": d.total - d.online,
+          total: d.total,
+          faulted: d.faulted,
+          charging: d.charging,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => (b?.total ?? 0) - (a?.total ?? 0));
 
     // Faulted stations
     const faultedStations = stations.filter(
       (s) => s.ocpp_status === "Faulted"
     );
 
-    return { total, online, charging, faulted, connectionData, evseData, lastOcppData, faultedStations };
-  }, [stations]);
+    return {
+      total, online, charging, faulted, available, availabilityPct,
+      connectionData, freshnessData, powerData, territoryData,
+      faultedStations,
+    };
+  }, [stations, territories]);
 
   // ── Filtered faulted list ─────────────────────────────────
 
@@ -214,12 +283,12 @@ export function CpoOverviewPage() {
       </div>
 
       <PageHelp
-        summary="Vue d'ensemble de votre activité CPO (Charge Point Operator) en roaming"
+        summary="Vue d'ensemble de votre réseau de bornes — statuts, répartition géographique et puissance"
         items={[
-          { label: "CPO", description: "Charge Point Operator — vous, en tant qu'opérateur qui gère les bornes physiques." },
-          { label: "Sessions roaming", description: "Charges effectuées sur vos bornes par des clients d'autres opérateurs." },
-          { label: "Revenus roaming", description: "Facturation aux eMSP partenaires pour l'utilisation de vos bornes par leurs clients." },
-          { label: "Taux d'occupation", description: "Pourcentage de vos sessions provenant de clients en roaming vs clients directs." },
+          { label: "Disponibilité", description: "Pourcentage de bornes opérationnelles (statut Available ou Charging) sur le total du réseau." },
+          { label: "En ligne", description: "Bornes connectées et communicantes (dernière synchronisation récente)." },
+          { label: "En panne", description: "Bornes en statut Faulted — nécessitent une intervention technique." },
+          { label: "Fraîcheur", description: "Délai depuis la dernière remontée de données (sync API ou heartbeat OCPP)." },
         ]}
       />
 
@@ -227,7 +296,7 @@ export function CpoOverviewPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard label="Bornes totales" value={stats?.total ?? 0} icon={Radio} color="#6366f1" />
         <KPICard label="En ligne" value={stats?.online ?? 0} icon={Wifi} color="#10b981" />
-        <KPICard label="En charge" value={stats?.charging ?? 0} icon={Zap} color="#3b82f6" />
+        <KPICard label="Disponibilité" value={`${stats?.availabilityPct ?? 0}%`} icon={CheckCircle2} color="#3b82f6" />
         <KPICard
           label="En panne"
           value={stats?.faulted ?? 0}
@@ -260,27 +329,68 @@ export function CpoOverviewPage() {
 
       {/* Tab Content */}
       {activeTab === "Vue d'ensemble" && stats && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Connection Chart */}
-          <DonutChart
-            title="Connexion des bornes"
-            data={stats.connectionData}
-            colors={CONNECTION_COLORS}
-          />
+        <div className="space-y-6">
+          {/* Row 1: Donut charts */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <DonutChart
+              title="Connexion des bornes"
+              data={stats.connectionData}
+              colors={CONNECTION_COLORS}
+            />
+            <DonutChart
+              title="Répartition par puissance"
+              data={stats.powerData}
+              colors={POWER_COLORS}
+            />
+            <DonutChart
+              title="Fraîcheur des données"
+              data={stats.freshnessData}
+              colors={FRESHNESS_COLORS}
+            />
+          </div>
 
-          {/* EVSE Status Chart */}
-          <DonutChart
-            title="État EVSE"
-            data={stats.evseData}
-            colors={EVSE_COLORS}
-          />
-
-          {/* Last OCPP Chart */}
-          <DonutChart
-            title="Dernière communication OCPP"
-            data={stats.lastOcppData}
-            colors={LAST_OCPP_COLORS}
-          />
+          {/* Row 2: Territory breakdown */}
+          {stats.territoryData.length > 0 && (
+            <div className="bg-surface border border-border rounded-2xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <MapPin className="w-4 h-4 text-foreground-muted" />
+                <h3 className="text-sm font-semibold text-foreground">Répartition par territoire</h3>
+              </div>
+              <ResponsiveContainer width="100%" height={Math.max(180, stats.territoryData.length * 50)}>
+                <BarChart
+                  data={stats.territoryData}
+                  layout="vertical"
+                  margin={{ top: 0, right: 30, left: 10, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 12, fill: "var(--color-foreground-muted)" }} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    tick={{ fontSize: 13, fill: "var(--color-foreground)" }}
+                    width={110}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "var(--color-surface)",
+                      border: "1px solid var(--color-border)",
+                      borderRadius: "12px",
+                      fontSize: "13px",
+                    }}
+                    formatter={(value: number, name: string) => [value, name]}
+                  />
+                  <Legend
+                    verticalAlign="top"
+                    iconType="circle"
+                    iconSize={8}
+                    wrapperStyle={{ fontSize: "12px", paddingBottom: "8px" }}
+                  />
+                  <Bar dataKey="En ligne" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="Hors ligne" stackId="a" fill="#ef4444" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       )}
 
