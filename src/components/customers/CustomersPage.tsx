@@ -35,22 +35,19 @@ interface ConsumerProfile {
   email: string | null;
   full_name: string | null;
   phone: string | null;
+  profile_picture_url: string | null;
   user_type: string | null;
   is_company: boolean;
   company_name: string | null;
-  address: string | null;
-  postal_code: string | null;
-  city: string | null;
-  country: string | null;
-  account_manager: string | null;
-  validity_date: string | null;
-  cost_center: string | null;
-  siret: string | null;
-  vat_number: string | null;
-  billing_mode: string | null;
-  status: string | null;
+  road_user_id: string | null;
+  gfx_user_id: string | null;
+  stripe_customer_id: string | null;
+  preferred_language: string | null;
+  push_notifications: boolean;
+  is_active: boolean;
   admin_notes: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 interface Customer extends ConsumerProfile {
@@ -305,7 +302,7 @@ export function CustomersPage() {
       // 1. Fetch all consumer profiles
       const { data: profiles, error: profErr } = await supabase
         .from("consumer_profiles")
-        .select("id, email, full_name, phone, user_type, is_company, company_name, address, postal_code, city, country, account_manager, validity_date, cost_center, siret, vat_number, billing_mode, status, admin_notes, created_at")
+        .select("id, email, full_name, phone, profile_picture_url, user_type, is_company, company_name, road_user_id, gfx_user_id, stripe_customer_id, preferred_language, push_notifications, is_active, admin_notes, created_at, updated_at")
         .order("created_at", { ascending: false });
       if (profErr) throw profErr;
 
@@ -831,13 +828,6 @@ function AddCustomerModal({
     user_type: "INDIVIDUAL" as "INDIVIDUAL" | "BUSINESS" | "FLEET_MANAGER",
     is_company: false,
     company_name: "",
-    address: "",
-    postal_code: "",
-    city: "",
-    country: "FR",
-    account_manager: "",
-    siret: "",
-    billing_mode: "POSTPAID" as "PREPAID" | "POSTPAID",
     admin_notes: "",
   });
   const [loading, setLoading] = useState(false);
@@ -857,13 +847,6 @@ function AddCustomerModal({
         user_type: form.user_type,
         is_company: form.is_company,
         company_name: form.company_name.trim() || null,
-        address: form.address.trim() || null,
-        postal_code: form.postal_code.trim() || null,
-        city: form.city.trim() || null,
-        country: form.country || null,
-        account_manager: form.account_manager.trim() || null,
-        siret: form.siret.trim() || null,
-        billing_mode: form.billing_mode,
         admin_notes: form.admin_notes.trim() || null,
       });
       onCreated();
@@ -943,65 +926,12 @@ function AddCustomerModal({
               <label htmlFor="is_company" className="text-sm text-foreground">Compte entreprise (B2B)</label>
             </div>
             {form.is_company && (
-              <>
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">Nom de l'entreprise</label>
-                  <input type="text" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })}
-                    placeholder="Nom de la société" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-                </div>
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">SIRET</label>
-                  <input type="text" value={form.siret} onChange={(e) => setForm({ ...form, siret: e.target.value })}
-                    placeholder="123 456 789 00012" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-                </div>
-              </>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Nom de l'entreprise</label>
+                <input type="text" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })}
+                  placeholder="Nom de la société" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
+              </div>
             )}
-            {/* Adresse */}
-            <div>
-              <label className="block text-xs text-foreground-muted mb-1.5">Adresse</label>
-              <input type="text" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })}
-                placeholder="12 rue de la Paix" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Code postal</label>
-                <input type="text" value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })}
-                  placeholder="97110" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Ville</label>
-                <input type="text" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })}
-                  placeholder="Pointe-à-Pitre" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Pays</label>
-                <select value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50">
-                  <option value="FR">France</option>
-                  <option value="GP">Guadeloupe</option>
-                  <option value="MQ">Martinique</option>
-                  <option value="RE">La Réunion</option>
-                  <option value="GF">Guyane</option>
-                  <option value="BE">Belgique</option>
-                  <option value="CH">Suisse</option>
-                </select>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Gestionnaire de compte</label>
-                <input type="text" value={form.account_manager} onChange={(e) => setForm({ ...form, account_manager: e.target.value })}
-                  placeholder="Nom du gestionnaire" className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50" />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Mode facturation</label>
-                <select value={form.billing_mode} onChange={(e) => setForm({ ...form, billing_mode: e.target.value as "PREPAID" | "POSTPAID" })}
-                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm focus:outline-none focus:border-primary/50">
-                  <option value="POSTPAID">Post-payé</option>
-                  <option value="PREPAID">Prépayé</option>
-                </select>
-              </div>
-            </div>
             <div>
               <label className="block text-xs text-foreground-muted mb-1.5">Notes internes</label>
               <textarea
@@ -1095,29 +1025,18 @@ function CustomerDetailDrawer({
             <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Informations</p>
             <DetailItem label="Type" value={customer.user_type ?? "—"} />
             <DetailItem label="Téléphone" value={customer.phone ?? "—"} />
-            <DetailItem label="Statut" value={customer.status ?? "active"} />
+            <DetailItem label="Statut" value={customer.is_active ? "Actif" : "Inactif"} />
             <DetailItem label="Entreprise" value={customer.company_name ?? (customer.is_company ? "Oui" : "—")} />
-            {customer.siret && <DetailItem label="SIRET" value={customer.siret} />}
-            {customer.vat_number && <DetailItem label="N° TVA" value={customer.vat_number} />}
+            <DetailItem label="Langue" value={customer.preferred_language ?? "—"} />
             <DetailItem label="Inscrit le" value={formatRelativeDate(customer.created_at)} />
-            {customer.validity_date && <DetailItem label="Validité" value={new Date(customer.validity_date).toLocaleDateString("fr-FR")} />}
           </div>
-          {/* Adresse */}
-          {(customer.address || customer.city) && (
+          {/* IDs externes */}
+          {(customer.gfx_user_id || customer.road_user_id || customer.stripe_customer_id) && (
             <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Adresse</p>
-              <DetailItem label="Rue" value={customer.address ?? "—"} />
-              <DetailItem label="Ville" value={[customer.postal_code, customer.city].filter(Boolean).join(" ") || "—"} />
-              <DetailItem label="Pays" value={customer.country ?? "—"} />
-            </div>
-          )}
-          {/* Gestion */}
-          {(customer.account_manager || customer.cost_center || customer.billing_mode) && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Gestion</p>
-              {customer.account_manager && <DetailItem label="Gestionnaire" value={customer.account_manager} />}
-              {customer.cost_center && <DetailItem label="Centre de coût" value={customer.cost_center} />}
-              {customer.billing_mode && <DetailItem label="Facturation" value={customer.billing_mode === "PREPAID" ? "Prépayé" : "Post-payé"} />}
+              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">IDs externes</p>
+              {customer.gfx_user_id && <DetailItem label="GreenFlux" value={customer.gfx_user_id} />}
+              {customer.road_user_id && <DetailItem label="ROAD" value={customer.road_user_id} />}
+              {customer.stripe_customer_id && <DetailItem label="Stripe" value={customer.stripe_customer_id} />}
             </div>
           )}
           {/* Notes */}
@@ -1179,17 +1098,7 @@ function EditCustomerModal({
     user_type: (customer.user_type ?? "INDIVIDUAL") as "INDIVIDUAL" | "BUSINESS" | "FLEET_MANAGER",
     is_company: customer.is_company,
     company_name: customer.company_name ?? "",
-    address: customer.address ?? "",
-    postal_code: customer.postal_code ?? "",
-    city: customer.city ?? "",
-    country: customer.country ?? "FR",
-    account_manager: customer.account_manager ?? "",
-    validity_date: customer.validity_date ? customer.validity_date.slice(0, 10) : "",
-    cost_center: customer.cost_center ?? "",
-    siret: customer.siret ?? "",
-    vat_number: customer.vat_number ?? "",
-    billing_mode: (customer.billing_mode ?? "POSTPAID") as "PREPAID" | "POSTPAID",
-    status: (customer.status ?? "active") as "active" | "inactive" | "suspended",
+    is_active: customer.is_active,
     admin_notes: customer.admin_notes ?? "",
   });
   const [loading, setLoading] = useState(false);
@@ -1208,17 +1117,7 @@ function EditCustomerModal({
         user_type: form.user_type,
         is_company: form.is_company,
         company_name: form.company_name.trim() || null,
-        address: form.address.trim() || null,
-        postal_code: form.postal_code.trim() || null,
-        city: form.city.trim() || null,
-        country: form.country || null,
-        account_manager: form.account_manager.trim() || null,
-        validity_date: form.validity_date || null,
-        cost_center: form.cost_center.trim() || null,
-        siret: form.siret.trim() || null,
-        vat_number: form.vat_number.trim() || null,
-        billing_mode: form.billing_mode,
-        status: form.status,
+        is_active: form.is_active,
         admin_notes: form.admin_notes.trim() || null,
       });
       onSaved();
@@ -1265,11 +1164,11 @@ function EditCustomerModal({
               </div>
               <div>
                 <label className="block text-xs text-foreground-muted mb-1.5">Statut</label>
-                <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as typeof form.status })} className={inputClass}>
-                  <option value="active">Actif</option>
-                  <option value="inactive">Inactif</option>
-                  <option value="suspended">Suspendu</option>
-                </select>
+                <div className="flex items-center gap-2 py-2">
+                  <input type="checkbox" id="edit_is_active" checked={form.is_active}
+                    onChange={(e) => setForm({ ...form, is_active: e.target.checked })} className="w-4 h-4 accent-primary" />
+                  <label htmlFor="edit_is_active" className="text-sm text-foreground">Compte actif</label>
+                </div>
               </div>
             </div>
             {/* Entreprise */}
@@ -1279,73 +1178,11 @@ function EditCustomerModal({
               <label htmlFor="edit_is_company" className="text-sm text-foreground">Compte entreprise (B2B)</label>
             </div>
             {form.is_company && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">Nom entreprise</label>
-                  <input type="text" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} className={inputClass} />
-                </div>
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">SIRET</label>
-                  <input type="text" value={form.siret} onChange={(e) => setForm({ ...form, siret: e.target.value })} className={inputClass} />
-                </div>
-                <div>
-                  <label className="block text-xs text-foreground-muted mb-1.5">N° TVA</label>
-                  <input type="text" value={form.vat_number} onChange={(e) => setForm({ ...form, vat_number: e.target.value })}
-                    placeholder="FR12345678901" className={inputClass} />
-                </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Nom entreprise</label>
+                <input type="text" value={form.company_name} onChange={(e) => setForm({ ...form, company_name: e.target.value })} className={inputClass} />
               </div>
             )}
-            {/* Adresse */}
-            <div>
-              <label className="block text-xs text-foreground-muted mb-1.5">Adresse</label>
-              <input type="text" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className={inputClass} />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Code postal</label>
-                <input type="text" value={form.postal_code} onChange={(e) => setForm({ ...form, postal_code: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Ville</label>
-                <input type="text" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Pays</label>
-                <select value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} className={inputClass}>
-                  <option value="FR">France</option>
-                  <option value="GP">Guadeloupe</option>
-                  <option value="MQ">Martinique</option>
-                  <option value="RE">La Réunion</option>
-                  <option value="GF">Guyane</option>
-                  <option value="BE">Belgique</option>
-                  <option value="CH">Suisse</option>
-                </select>
-              </div>
-            </div>
-            {/* Gestion */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Gestionnaire</label>
-                <input type="text" value={form.account_manager} onChange={(e) => setForm({ ...form, account_manager: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Date de validité</label>
-                <input type="date" value={form.validity_date} onChange={(e) => setForm({ ...form, validity_date: e.target.value })} className={inputClass} />
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Centre de coût</label>
-                <input type="text" value={form.cost_center} onChange={(e) => setForm({ ...form, cost_center: e.target.value })} className={inputClass} />
-              </div>
-              <div>
-                <label className="block text-xs text-foreground-muted mb-1.5">Facturation</label>
-                <select value={form.billing_mode} onChange={(e) => setForm({ ...form, billing_mode: e.target.value as typeof form.billing_mode })} className={inputClass}>
-                  <option value="POSTPAID">Post-payé</option>
-                  <option value="PREPAID">Prépayé</option>
-                </select>
-              </div>
-            </div>
             {/* Notes */}
             <div>
               <label className="block text-xs text-foreground-muted mb-1.5">Notes internes</label>
