@@ -22,6 +22,7 @@ import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
+import { useCpo } from "@/contexts/CpoContext";
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ interface Customer {
   is_active: boolean;
   admin_notes: string | null;
   created_at: string;
+  cpo_id: string | null;
 }
 
 type SortKey =
@@ -271,22 +273,44 @@ function CustomersTableSkeleton({ rows = 10 }: { rows?: number }) {
 // ── Main Page Component ──────────────────────────────────────
 
 export function CustomersPage() {
-  // ── Data fetching (direct Supabase) ──
+  const { selectedCpoId } = useCpo();
+
+  // ── Data fetching (direct Supabase, filtered by CPO, paginated) ──
   const {
     data: customers,
     isLoading,
     isError,
     refetch,
   } = useQuery<Customer[]>({
-    queryKey: ["customers"],
+    queryKey: ["customers", selectedCpoId ?? "all"],
     retry: 1,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("gfx_consumers")
-        .select("id, driver_external_id, full_name, primary_token_uid, customer_group, total_sessions, total_energy_kwh, first_session_at, last_session_at, is_active, admin_notes, created_at")
-        .order("total_sessions", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as Customer[];
+      const PAGE = 1000;
+      let allRows: Customer[] = [];
+      let from = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        let query = supabase
+          .from("gfx_consumers")
+          .select("id, driver_external_id, full_name, primary_token_uid, customer_group, total_sessions, total_energy_kwh, first_session_at, last_session_at, is_active, admin_notes, created_at, cpo_id")
+          .order("total_sessions", { ascending: false })
+          .range(from, from + PAGE - 1);
+
+        // Filter by selected CPO
+        if (selectedCpoId) {
+          query = query.eq("cpo_id", selectedCpoId);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        const rows = (data ?? []) as Customer[];
+        allRows = allRows.concat(rows);
+        from += PAGE;
+        hasMore = rows.length === PAGE;
+      }
+
+      return allRows;
     },
   });
 
