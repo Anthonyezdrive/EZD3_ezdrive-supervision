@@ -11,6 +11,7 @@ import {
   Search,
   FileText,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -358,7 +359,7 @@ export function SessionsPage() {
   const { selectedCpoId } = useCpo();
 
   // ── Resolve station IDs and chargepoint IDs for selected CPO ──
-  const { data: cpoFilterIds } = useQuery({
+  const { data: cpoFilterIds, isError: _isCpoFilterError } = useQuery({
     queryKey: ["cpo-filter-ids", selectedCpoId ?? "all"],
     enabled: !!selectedCpoId,
     queryFn: async () => {
@@ -377,6 +378,7 @@ export function SessionsPage() {
     isLoading,
     isError,
     refetch,
+    dataUpdatedAt: _dataUpdatedAt,
   } = useQuery({
     queryKey: ["sessions", page, statusFilter, dateFrom, dateTo, searchQuery, selectedCpoId ?? "all"],
     retry: false,
@@ -419,7 +421,7 @@ export function SessionsPage() {
   });
 
   // ── Aggregate: total sessions ──
-  const { data: totalCount } = useQuery({
+  const { data: totalCount, isError: _isTotalCountError } = useQuery({
     queryKey: ["sessions-total", selectedCpoId ?? "all"],
     retry: false,
     queryFn: async () => {
@@ -439,7 +441,7 @@ export function SessionsPage() {
   });
 
   // ── Aggregate: active sessions ──
-  const { data: activeCount } = useQuery({
+  const { data: activeCount, isError: _isActiveCountError } = useQuery({
     queryKey: ["sessions-active", selectedCpoId ?? "all"],
     retry: false,
     queryFn: async () => {
@@ -460,7 +462,7 @@ export function SessionsPage() {
   });
 
   // ── Aggregate: total energy ──
-  const { data: totalEnergy } = useQuery({
+  const { data: totalEnergy, isError: _isTotalEnergyError } = useQuery({
     queryKey: ["sessions-energy", selectedCpoId ?? "all"],
     retry: false,
     queryFn: async () => {
@@ -481,7 +483,7 @@ export function SessionsPage() {
   });
 
   // ── Aggregate: average duration ──
-  const { data: avgDuration } = useQuery({
+  const { data: avgDuration, isError: _isAvgDurationError } = useQuery({
     queryKey: ["sessions-avg-duration", selectedCpoId ?? "all"],
     retry: false,
     queryFn: async () => {
@@ -511,6 +513,7 @@ export function SessionsPage() {
   const {
     data: cdrData,
     isLoading: cdrLoading,
+    isError: _isCdrError,
     refetch: cdrRefetch,
   } = useQuery({
     queryKey: ["ocpi-cdrs", page, dateFrom, dateTo, selectedCpoId ?? "all"],
@@ -744,6 +747,18 @@ export function SessionsPage() {
         ]}
         tips={["Les sessions 'Active' depuis plus de 24h sont généralement des anomalies à investiguer."]}
       />
+
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* View tabs */}
       <div className="flex gap-1 bg-surface border border-border rounded-xl p-1 w-fit">

@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -295,23 +296,23 @@ export function ReimbursementPage() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
   // ── Related data ──
-  const { data: cpoNetworks } = useQuery<NetworkRef[]>({
+  const { data: cpoNetworks, isError: _isErrorCpoNetworks } = useQuery<NetworkRef[]>({
     queryKey: ["cpo-networks"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("cpo_networks").select("id, name").order("name"); if (error) return []; return (data ?? []) as NetworkRef[]; } catch { return []; } },
   });
-  const { data: cpoContracts } = useQuery<ContractRef[]>({
+  const { data: cpoContracts, isError: _isErrorCpoContracts } = useQuery<ContractRef[]>({
     queryKey: ["cpo-contracts"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("cpo_contracts").select("id, name").order("name"); if (error) return []; return (data ?? []) as ContractRef[]; } catch { return []; } },
   });
-  const { data: emspNetworks } = useQuery<NetworkRef[]>({
+  const { data: emspNetworks, isError: _isErrorEmspNetworks } = useQuery<NetworkRef[]>({
     queryKey: ["emsp-networks"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("emsp_networks").select("id, name").order("name"); if (error) return []; return (data ?? []) as NetworkRef[]; } catch { return []; } },
   });
-  const { data: emspContracts } = useQuery<ContractRef[]>({
+  const { data: emspContracts, isError: _isErrorEmspContracts } = useQuery<ContractRef[]>({
     queryKey: ["emsp-contracts"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("emsp_contracts").select("id, name").order("name"); if (error) return []; return (data ?? []) as ContractRef[]; } catch { return []; } },
   });
-  const { data: agreementsList } = useQuery<AgreementRef[]>({
+  const { data: agreementsList, isError: _isErrorAgreements } = useQuery<AgreementRef[]>({
     queryKey: ["roaming-agreements-ref"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("roaming_agreements").select("id, management, status").order("created_at", { ascending: false }); if (error) return []; return (data ?? []) as AgreementRef[]; } catch { return []; } },
   });
@@ -323,7 +324,7 @@ export function ReimbursementPage() {
   const emspContractMap = useMemo(() => { const m = new Map<string, string>(); (emspContracts ?? []).forEach((c) => m.set(c.id, c.name)); return m; }, [emspContracts]);
 
   // ── Data fetching ──
-  const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
+  const { data: rules, isLoading, isError, refetch, dataUpdatedAt } = useQuery<ReimbursementRule[]>({
     queryKey: ["reimbursement-rules"], retry: false,
     queryFn: async () => { try { const { data, error } = await supabase.from("reimbursement_rules").select("*").order("created_at", { ascending: false }); if (error) return []; return (data ?? []) as ReimbursementRule[]; } catch { return []; } },
   });
@@ -458,6 +459,19 @@ export function ReimbursementPage() {
           Ajouter Nouveau
         </button>
       </div>
+
+      {/* Error banner */}
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-border">
@@ -648,7 +662,7 @@ export function ReimbursementPage() {
           {/* Footer */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-border">
             <div className="flex items-center gap-3 text-xs text-foreground-muted">
-              <span>récupéré le {new Date().toLocaleDateString("fr-FR")} @ {new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+              <span>récupéré le {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</span>
               <span className="flex items-center gap-4 ml-4">
                 <span className="flex items-center gap-1"><StatusDot status="expired" /> expiré</span>
                 <span className="flex items-center gap-1"><StatusDot status="active" /> actif</span>

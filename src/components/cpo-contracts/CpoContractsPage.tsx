@@ -19,6 +19,7 @@ import {
   Receipt,
   ExternalLink,
   Building2,
+  AlertCircle,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -232,7 +233,7 @@ function ContractListView({ onSelect }: { onSelect: (c: CpoContract) => void }) 
   const [page, setPage] = useState(1);
 
   // -- Fetch contracts --
-  const { data: contracts, isLoading } = useQuery<CpoContract[]>({
+  const { data: contracts, isLoading, isError, refetch, dataUpdatedAt: _dataUpdatedAt } = useQuery<CpoContract[]>({
     queryKey: ["cpo-contracts"],
     retry: false,
     queryFn: async () => {
@@ -250,7 +251,7 @@ function ContractListView({ onSelect }: { onSelect: (c: CpoContract) => void }) 
   });
 
   // -- Networks for select dropdown & display --
-  const { data: networks } = useQuery<CpoNetwork[]>({
+  const { data: networks, isError: _isNetworksError } = useQuery<CpoNetwork[]>({
     queryKey: ["cpo-networks-select"],
     retry: false,
     queryFn: async () => {
@@ -485,6 +486,19 @@ function ContractListView({ onSelect }: { onSelect: (c: CpoContract) => void }) 
           className="w-full pl-9 pr-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus transition-colors"
         />
       </div>
+
+      {/* Error banner */}
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Table */}
       {isLoading ? (
@@ -745,7 +759,7 @@ function ContractDetailView({
   const [editModalOpen, setEditModalOpen] = useState(false);
 
   // -- Fetch networks for display & edit --
-  const { data: networks } = useQuery<CpoNetwork[]>({
+  const { data: networks, isError: _isNetworksError } = useQuery<CpoNetwork[]>({
     queryKey: ["cpo-networks-select"],
     retry: false,
     queryFn: async () => {
@@ -1090,7 +1104,7 @@ function ContractCposTab({ contractId }: { contractId: string }) {
   const [search, setSearch] = useState("");
 
   // Fetch CPO operators
-  const { data: cpoOperators, isLoading } = useQuery<CpoOperator[]>({
+  const { data: cpoOperators, isLoading, isError: _isError } = useQuery<CpoOperator[]>({
     queryKey: ["cpo-operators-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1187,7 +1201,7 @@ function ContractAgreementsTab({ contractId }: { contractId: string }) {
   const [filterTab, setFilterTab] = useState<"all" | "active" | "expired">("all");
   const [page, setPage] = useState(1);
 
-  const { data: agreements, isLoading } = useQuery<RoamingAgreement[]>({
+  const { data: agreements, isLoading, isError: _isError } = useQuery<RoamingAgreement[]>({
     queryKey: ["agreements-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1350,7 +1364,7 @@ function ContractBillingTab({ contractId }: { contractId: string }) {
   const queryClient = useQueryClient();
   const { success: toastSuccess, error: toastError } = useToast();
 
-  const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
+  const { data: rules, isLoading, isError: _isError } = useQuery<ReimbursementRule[]>({
     queryKey: ["billing-rules-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase

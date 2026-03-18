@@ -23,6 +23,7 @@ import {
   Receipt,
   ExternalLink,
   Building2,
+  AlertCircle,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -238,7 +239,7 @@ function NetworkListView({ onSelect }: { onSelect: (n: CpoNetwork) => void }) {
   const [page, setPage] = useState(1);
 
   // ── Fetch networks ──
-  const { data: networks, isLoading } = useQuery<CpoNetwork[]>({
+  const { data: networks, isLoading, isError, refetch, dataUpdatedAt: _dataUpdatedAt } = useQuery<CpoNetwork[]>({
     queryKey: ["cpo-networks"],
     retry: false,
     queryFn: async () => {
@@ -256,7 +257,7 @@ function NetworkListView({ onSelect }: { onSelect: (n: CpoNetwork) => void }) {
   });
 
   // ── Fetch contract counts per network ──
-  const { data: contractCounts } = useQuery({
+  const { data: contractCounts, isError: _isErrorContractCounts } = useQuery({
     queryKey: ["cpo-contract-counts"],
     queryFn: async () => {
       const { data } = await supabase.from("cpo_contracts").select("network_id");
@@ -269,7 +270,7 @@ function NetworkListView({ onSelect }: { onSelect: (n: CpoNetwork) => void }) {
   });
 
   // ── Fetch agreement counts per network ──
-  const { data: agreementCounts } = useQuery({
+  const { data: agreementCounts, isError: _isErrorAgreementCounts } = useQuery({
     queryKey: ["cpo-agreement-counts"],
     queryFn: async () => {
       const { data } = await supabase.from("roaming_agreements").select("cpo_network_id");
@@ -441,6 +442,18 @@ function NetworkListView({ onSelect }: { onSelect: (n: CpoNetwork) => void }) {
           { label: "Regles de facturation", description: "Tarification appliquee aux sessions de roaming (prix/kWh, prix/min, frais de demarrage)." },
         ]}
       />
+
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-1 w-fit">
@@ -862,7 +875,7 @@ function ContractsTab({ networkId, onSelectContract }: { networkId: string; onSe
   const [search, setSearch] = useState("");
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
 
-  const { data: contracts, isLoading } = useQuery<CpoContract[]>({
+  const { data: contracts, isLoading, isError: _isErrorContracts } = useQuery<CpoContract[]>({
     queryKey: ["cpo-contracts-for-network", networkId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -992,7 +1005,7 @@ function CposTab({ networkId }: { networkId: string }) {
   const [search, setSearch] = useState("");
 
   // Show CPO operators that have contracts linked to this network
-  const { data: contracts } = useQuery<(CpoContract & { cpo_operator?: CpoOperator })[]>({
+  const { data: contracts, isError: _isErrorContractsCpo } = useQuery<(CpoContract & { cpo_operator?: CpoOperator })[]>({
     queryKey: ["cpo-contracts-for-cpo-tab", networkId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1006,7 +1019,7 @@ function CposTab({ networkId }: { networkId: string }) {
   });
 
   // Also fetch all CPO operators to cross-reference
-  const { data: cpoOperators, isLoading } = useQuery<CpoOperator[]>({
+  const { data: cpoOperators, isLoading, isError: _isErrorCpoOperators } = useQuery<CpoOperator[]>({
     queryKey: ["cpo-operators-for-network"],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1115,7 +1128,7 @@ function AgreementsTab({ networkId }: { networkId: string }) {
   const [filterTab, setFilterTab] = useState<"all" | "active" | "expired">("all");
   const [page, setPage] = useState(1);
 
-  const { data: agreements, isLoading } = useQuery<RoamingAgreement[]>({
+  const { data: agreements, isLoading, isError: _isErrorAgreements } = useQuery<RoamingAgreement[]>({
     queryKey: ["agreements-for-network", networkId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1278,7 +1291,7 @@ function BillingTab({ networkId }: { networkId: string }) {
   const queryClient = useQueryClient();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
 
-  const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
+  const { data: rules, isLoading, isError: _isErrorRules } = useQuery<ReimbursementRule[]>({
     queryKey: ["billing-rules-for-network", networkId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -1603,7 +1616,7 @@ function ContractDetailView({
   const [editModalOpen, setEditModalOpen] = useState(false);
 
   // Fetch networks for edit dropdown
-  const { data: networks } = useQuery<{ id: string; name: string }[]>({
+  const { data: networks, isError: _isErrorNetworksSelect } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["cpo-networks-select"],
     queryFn: async () => {
       const { data, error } = await supabase.from("cpo_networks").select("id, name").order("name");
@@ -1873,7 +1886,7 @@ function ContractDetailRow({ label, value, isLink }: { label: string; value: str
 function ContractCposSubTab({ contractId }: { contractId: string }) {
   const [search, setSearch] = useState("");
 
-  const { data: cpoOperators, isLoading } = useQuery<CpoOperator[]>({
+  const { data: cpoOperators, isLoading, isError: _isErrorCpoOperatorsContract } = useQuery<CpoOperator[]>({
     queryKey: ["cpo-operators-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase.from("cpo_operators").select("id, name, code, color").order("name");
@@ -1956,7 +1969,7 @@ function ContractAgreementsSubTab({ contractId }: { contractId: string }) {
   const [filterTab, setFilterTab] = useState<"all" | "active" | "expired">("all");
   const [page, setPage] = useState(1);
 
-  const { data: agreements, isLoading } = useQuery<RoamingAgreement[]>({
+  const { data: agreements, isLoading, isError: _isErrorAgreementsContract } = useQuery<RoamingAgreement[]>({
     queryKey: ["agreements-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -2084,7 +2097,7 @@ function ContractBillingSubTab({ contractId }: { contractId: string }) {
   const queryClient = useQueryClient();
   const { success: toastSuccess, error: toastError, info: toastInfo } = useToast();
 
-  const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
+  const { data: rules, isLoading, isError: _isErrorRulesContract } = useQuery<ReimbursementRule[]>({
     queryKey: ["billing-rules-for-contract", contractId],
     queryFn: async () => {
       const { data, error } = await supabase

@@ -16,6 +16,7 @@ import {
   Loader2,
   ArrowLeft,
   Save,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
@@ -84,7 +85,7 @@ function stationToRow(station: Station): LocationRow {
 
 export function LocationsPage() {
   const { selectedCpoId } = useCpo();
-  const { data: stations, isLoading } = useStations(selectedCpoId);
+  const { data: stations, isLoading, isError, refetch, dataUpdatedAt } = useStations(selectedCpoId);
   const [editingStation, setEditingStation] = useState<Station | null>(null);
   const queryClient = useQueryClient();
 
@@ -109,6 +110,9 @@ export function LocationsPage() {
     <LocationListView
       stations={stations ?? []}
       isLoading={isLoading}
+      isError={isError}
+      refetch={refetch}
+      dataUpdatedAt={dataUpdatedAt}
       onEdit={setEditingStation}
     />
   );
@@ -121,10 +125,16 @@ export function LocationsPage() {
 function LocationListView({
   stations,
   isLoading,
+  isError,
+  refetch,
+  dataUpdatedAt,
   onEdit,
 }: {
   stations: Station[];
   isLoading: boolean;
+  isError: boolean;
+  refetch: () => void;
+  dataUpdatedAt: number;
   onEdit: (station: Station) => void;
 }) {
   const [activeTab, setActiveTab] = useState<LocationTab>("normal");
@@ -217,6 +227,19 @@ function LocationListView({
         ))}
       </div>
 
+      {/* Error banner */}
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-surface border border-border rounded-b-2xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -288,7 +311,7 @@ function LocationListView({
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-border text-xs text-foreground-muted">
           <span>
-            recupere le {new Date().toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            recupere le {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "\u2014"}
           </span>
           <span>
             <span className="text-primary underline cursor-pointer">0 enregistrements selectionne</span>
@@ -352,7 +375,7 @@ function LocationEditView({
   onBack: () => void;
   onSaved: () => void;
 }) {
-  const { data: cpos } = useCPOs();
+  const { data: cpos, isError: _isCposError } = useCPOs();
   const [activeTab, setActiveTab] = useState<EditTab>("site");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

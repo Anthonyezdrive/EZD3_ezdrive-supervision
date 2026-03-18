@@ -39,6 +39,7 @@ import {
   ListChecks,
   FileText,
   NotebookPen,
+  AlertCircle,
 } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { cn, formatRelativeTime } from "@/lib/utils";
@@ -378,7 +379,7 @@ function DiagnosticTab({ station }: { station: Station }) {
   }, [timeRange]);
 
   // Notifications = status changes from station_status_log
-  const { data: notifications, isLoading: loadingNotifs } = useQuery<StatusNotification[]>({
+  const { data: notifications, isLoading: loadingNotifs, isError: isErrorDiag, refetch: refetchDiag, dataUpdatedAt: dataUpdatedAtDiag } = useQuery<StatusNotification[]>({
     queryKey: ["station-diag-notifs", station.id, timeFilter],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -484,6 +485,18 @@ function DiagnosticTab({ station }: { station: Station }) {
         <ChevronDown className={cn("w-5 h-5 text-foreground-muted transition-transform", collapsed && "-rotate-90")} />
       </button>
 
+      {isErrorDiag && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetchDiag()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
+
       {!collapsed && (
         <div className="px-6 pb-6">
           {/* Sub tabs */}
@@ -585,7 +598,7 @@ function DiagnosticTab({ station }: { station: Station }) {
               {/* Footer */}
               <div className="flex items-center justify-between mt-4 pt-3 border-t border-border">
                 <span className="text-xs text-foreground-muted">
-                  recupere le {new Date().toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  recupere le {dataUpdatedAtDiag ? new Date(dataUpdatedAtDiag).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
                 </span>
                 <span className="text-xs text-foreground-muted">
                   montrer {notifications?.length ?? 0} enregistrements
@@ -1093,7 +1106,7 @@ function AuthorizationTab({ station }: { station: Station }) {
   // Fetch tokens that have been used at this station (via transactions)
   const chargepointId = (station as any).ocpp_identity ?? station.gfx_id;
 
-  const { data: authorizedTokens, isLoading } = useQuery<AuthToken[]>({
+  const { data: authorizedTokens, isLoading, isError: isErrorAuth, refetch: refetchAuth, dataUpdatedAt: dataUpdatedAtAuth } = useQuery<AuthToken[]>({
     queryKey: ["station-auth-tokens", station.id, chargepointId],
     queryFn: async () => {
       if (!chargepointId) return [];
@@ -1123,6 +1136,18 @@ function AuthorizationTab({ station }: { station: Station }) {
 
   return (
     <div className="space-y-4">
+      {isErrorAuth && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetchAuth()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
+
       {/* Info banners */}
       <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl flex items-start gap-2">
         <Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
@@ -1236,7 +1261,7 @@ function AuthorizationTab({ station }: { station: Station }) {
 
       {/* Footer */}
       <div className="text-xs text-foreground-muted">
-        recupere le {new Date().toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+        recupere le {dataUpdatedAtAuth ? new Date(dataUpdatedAtAuth).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
       </div>
     </div>
   );

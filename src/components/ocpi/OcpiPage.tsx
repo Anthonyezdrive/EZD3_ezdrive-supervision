@@ -17,6 +17,7 @@ import {
   ChevronUp,
   ChevronRight,
   ChevronLeft,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/contexts/ToastContext";
@@ -130,7 +131,7 @@ export function OcpiPage() {
   });
 
   // ── Data ──
-  const { data: credentials, isLoading } = useQuery<OcpiCredential[]>({
+  const { data: credentials, isLoading, isError, refetch, dataUpdatedAt } = useQuery<OcpiCredential[]>({
     queryKey: ["ocpi-credentials"],
     queryFn: async () => {
       const { data, error } = await supabase.from("ocpi_credentials").select("*").order("role");
@@ -174,7 +175,7 @@ export function OcpiPage() {
   }, [credentials]);
 
   // ── CPO parties for "Parties relayées" tab ──
-  const { data: cpoParties } = useQuery({
+  const { data: cpoParties, isError: _isCpoPartiesError } = useQuery({
     queryKey: ["ocpi-cpo-parties"],
     queryFn: async () => {
       const { data, error } = await supabase.from("cpos").select("id, name, external_id, country_code, gfx_id").order("name");
@@ -489,6 +490,19 @@ export function OcpiPage() {
         </button>
       </div>
 
+      {/* Error banner */}
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       {isLoading ? (
         <div className="bg-surface border border-border rounded-2xl overflow-hidden divide-y divide-border">
@@ -613,7 +627,7 @@ export function OcpiPage() {
           {/* Footer */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-border">
             <span className="text-xs text-foreground-muted">
-              retrieved on {new Date().toLocaleDateString("fr-FR")} @ {new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              retrieved on {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
             </span>
             <div className="flex items-center gap-4">
               {totalPages > 1 && (
@@ -670,7 +684,7 @@ function CollapsibleSection({ title, defaultOpen = false, children }: { title: s
 }
 
 function DiagnosticTab({ subscriptionId }: { subscriptionId: string }) {
-  const { data: recentLogs, isLoading } = useQuery({
+  const { data: recentLogs, isLoading, isError: _isLogsError } = useQuery({
     queryKey: ["ocpi-push-logs", subscriptionId],
     queryFn: async () => {
       const { data } = await supabase
@@ -684,7 +698,7 @@ function DiagnosticTab({ subscriptionId }: { subscriptionId: string }) {
     refetchInterval: 15000,
   });
 
-  const { data: pushQueuePending } = useQuery({
+  const { data: pushQueuePending, isError: _isPendingError } = useQuery({
     queryKey: ["ocpi-push-pending"],
     queryFn: async () => {
       const { count } = await supabase.from("ocpi_push_queue").select("*", { count: "exact", head: true }).in("status", ["PENDING", "RETRY"]);
@@ -693,7 +707,7 @@ function DiagnosticTab({ subscriptionId }: { subscriptionId: string }) {
     refetchInterval: 10000,
   });
 
-  const { data: pushQueueFailed } = useQuery({
+  const { data: pushQueueFailed, isError: _isFailedError } = useQuery({
     queryKey: ["ocpi-push-failed"],
     queryFn: async () => {
       const { count } = await supabase.from("ocpi_push_queue").select("*", { count: "exact", head: true }).eq("status", "FAILED");

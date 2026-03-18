@@ -13,6 +13,7 @@ import {
   ChevronRight,
   ArrowLeft,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -120,7 +121,7 @@ export function AgreementsPage() {
   });
 
   // ── Related data for dropdowns ──
-  const { data: cpoNetworks } = useQuery<NetworkRef[]>({
+  const { data: cpoNetworks, isError: _isErrorCpoNetworks } = useQuery<NetworkRef[]>({
     queryKey: ["cpo-networks"],
     retry: false,
     queryFn: async () => {
@@ -132,7 +133,7 @@ export function AgreementsPage() {
     },
   });
 
-  const { data: cpoContracts } = useQuery<ContractRef[]>({
+  const { data: cpoContracts, isError: _isErrorCpoContracts } = useQuery<ContractRef[]>({
     queryKey: ["cpo-contracts"],
     retry: false,
     queryFn: async () => {
@@ -144,7 +145,7 @@ export function AgreementsPage() {
     },
   });
 
-  const { data: emspNetworks } = useQuery<NetworkRef[]>({
+  const { data: emspNetworks, isError: _isErrorEmspNetworks } = useQuery<NetworkRef[]>({
     queryKey: ["emsp-networks"],
     retry: false,
     queryFn: async () => {
@@ -156,7 +157,7 @@ export function AgreementsPage() {
     },
   });
 
-  const { data: emspContracts } = useQuery<ContractRef[]>({
+  const { data: emspContracts, isError: _isErrorEmspContracts } = useQuery<ContractRef[]>({
     queryKey: ["emsp-contracts"],
     retry: false,
     queryFn: async () => {
@@ -194,7 +195,7 @@ export function AgreementsPage() {
   }, [emspContracts]);
 
   // ── Data fetching ──
-  const { data: agreements, isLoading } = useQuery<Agreement[]>({
+  const { data: agreements, isLoading, isError, refetch, dataUpdatedAt } = useQuery<Agreement[]>({
     queryKey: ["roaming-agreements"],
     retry: false,
     queryFn: async () => {
@@ -589,6 +590,19 @@ export function AgreementsPage() {
         ))}
       </div>
 
+      {/* Error banner */}
+      {isError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-red-700">
+            <AlertCircle className="h-5 w-5" />
+            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+          </div>
+          <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
+            Réessayer
+          </button>
+        </div>
+      )}
+
       {/* Table */}
       {isLoading ? (
         <div className="bg-surface border border-border rounded-2xl overflow-hidden">
@@ -752,7 +766,7 @@ export function AgreementsPage() {
           {/* Footer */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-border">
             <span className="text-xs text-foreground-muted">
-              récupéré le {new Date().toLocaleDateString("fr-FR")} @ {new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              récupéré le {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
             </span>
             <div className="flex items-center gap-4">
               {totalPages > 1 && (
