@@ -187,20 +187,35 @@ function TableSkeleton({ rows = 5, cols = 6 }: { rows?: number; cols?: number })
   );
 }
 
-// ── Main Page ─────────────────────────────────────────────────
+// ── Main Page (3-level navigation) ────────────────────────────
 
 export function CpoNetworksPage() {
   const [selectedNetwork, setSelectedNetwork] = useState<CpoNetwork | null>(null);
+  const [selectedContract, setSelectedContract] = useState<CpoContract | null>(null);
 
+  // Level 3: Contract detail (nested inside network)
+  if (selectedNetwork && selectedContract) {
+    return (
+      <ContractDetailView
+        contract={selectedContract}
+        networkName={selectedNetwork.name}
+        onBack={() => setSelectedContract(null)}
+      />
+    );
+  }
+
+  // Level 2: Network detail
   if (selectedNetwork) {
     return (
       <NetworkDetailView
         network={selectedNetwork}
         onBack={() => setSelectedNetwork(null)}
+        onSelectContract={setSelectedContract}
       />
     );
   }
 
+  // Level 1: Network list
   return <NetworkListView onSelect={setSelectedNetwork} />;
 }
 
@@ -609,9 +624,11 @@ function NetworkListView({ onSelect }: { onSelect: (n: CpoNetwork) => void }) {
 function NetworkDetailView({
   network,
   onBack,
+  onSelectContract,
 }: {
   network: CpoNetwork;
   onBack: () => void;
+  onSelectContract: (c: CpoContract) => void;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("details");
   const queryClient = useQueryClient();
@@ -710,7 +727,7 @@ function NetworkDetailView({
 
       {/* Tab Content */}
       {activeTab === "details" && <DetailsTab network={network} />}
-      {activeTab === "contracts" && <ContractsTab networkId={network.id} />}
+      {activeTab === "contracts" && <ContractsTab networkId={network.id} onSelectContract={onSelectContract} />}
       {activeTab === "cpos" && <CposTab networkId={network.id} />}
       {activeTab === "agreements" && <AgreementsTab networkId={network.id} />}
       {activeTab === "billing" && <BillingTab networkId={network.id} />}
@@ -810,7 +827,7 @@ function DetailRow({ label, value, isLink }: { label: string; value: string; isL
 
 // ── Tab: Contrats CPO ─────────────────────────────────────────
 
-function ContractsTab({ networkId }: { networkId: string }) {
+function ContractsTab({ networkId, onSelectContract }: { networkId: string; onSelectContract: (c: CpoContract) => void }) {
   const [search, setSearch] = useState("");
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
 
@@ -909,9 +926,9 @@ function ContractsTab({ networkId }: { networkId: string }) {
               </thead>
               <tbody className="divide-y divide-border">
                 {filtered.map((c) => (
-                  <tr key={c.id} className="hover:bg-surface-elevated/50 transition-colors">
+                  <tr key={c.id} onClick={() => onSelectContract(c)} className="hover:bg-surface-elevated/50 transition-colors cursor-pointer">
                     <td className="px-4 py-3"><TypeBadge type={c.type} /></td>
-                    <td className="px-4 py-3 text-sm font-medium text-foreground">{c.name}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-foreground hover:text-primary transition-colors">{c.name}</td>
                     <td className="px-4 py-3 text-sm text-foreground">{c.country_code}</td>
                     <td className="px-4 py-3 text-sm text-foreground-muted">{c.party_id ?? "\u2014"}</td>
                     <td className="px-4 py-3 text-sm text-foreground-muted">{c.contract_code ?? "\u2014"}</td>
@@ -1516,6 +1533,664 @@ function EmptyState({ icon: Icon, message }: { icon: typeof Network; message: st
         <Icon className="w-6 h-6 text-foreground-muted" />
       </div>
       <p className="text-sm text-foreground-muted">{message}</p>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// CONTRACT DETAIL VIEW (nested inside Network detail)
+// ══════════════════════════════════════════════════════════════
+
+type ContractDetailTab = "details" | "cpos" | "agreements" | "billing";
+
+function ContractDetailView({
+  contract,
+  networkName,
+  onBack,
+}: {
+  contract: CpoContract;
+  networkName: string;
+  onBack: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<ContractDetailTab>("details");
+  const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [editModalOpen, setEditModalOpen] = useState(false);
+
+  // Fetch networks for edit dropdown
+  const { data: networks } = useQuery<{ id: string; name: string }[]>({
+    queryKey: ["cpo-networks-select"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("cpo_networks").select("id, name").order("name");
+      if (error) return [];
+      return (data ?? []) as { id: string; name: string }[];
+    },
+  });
+
+  const [editForm, setEditForm] = useState({
+    type: contract.type,
+    name: contract.name,
+    network_id: contract.network_id ?? "",
+    country_code: contract.country_code,
+    party_id: contract.party_id ?? "",
+    contract_code: contract.contract_code ?? "",
+    currency: contract.currency,
+    url: contract.url ?? "",
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (data: typeof editForm) => {
+      const { error } = await supabase.from("cpo_contracts").update({
+        type: data.type, name: data.name.trim(),
+        network_id: data.network_id || null,
+        country_code: data.country_code.trim(),
+        party_id: data.party_id.trim() || null,
+        contract_code: data.contract_code.trim() || null,
+        currency: data.currency.trim() || "EUR",
+        url: data.url.trim() || null,
+      }).eq("id", contract.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["cpo-contracts-for-network"] });
+      setEditModalOpen(false);
+      toastSuccess("Contrat modifie", "Les modifications ont ete enregistrees");
+      contract.name = editForm.name;
+      contract.type = editForm.type as CpoContract["type"];
+      contract.network_id = editForm.network_id || null;
+      contract.country_code = editForm.country_code;
+      contract.party_id = editForm.party_id || null;
+      contract.contract_code = editForm.contract_code || null;
+      contract.currency = editForm.currency;
+      contract.url = editForm.url || null;
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
+  const CONTRACT_TABS: { key: ContractDetailTab; label: string; icon: typeof FileSignature }[] = [
+    { key: "details", label: "Details", icon: FileSignature },
+    { key: "cpos", label: "CPO", icon: Building2 },
+    { key: "agreements", label: "Accords", icon: Handshake },
+    { key: "billing", label: "Regles de facturation en gros", icon: Receipt },
+  ];
+
+  return (
+    <div className="space-y-6">
+      {/* Header with breadcrumb */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={onBack}
+            className="p-2 rounded-xl border border-border hover:bg-surface-elevated transition-colors"
+            title="Retour au reseau"
+          >
+            <ArrowLeft className="w-4 h-4 text-foreground-muted" />
+          </button>
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+              <FileSignature className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 text-xs text-foreground-muted mb-0.5">
+                <Network className="w-3 h-3" />
+                <span>{networkName}</span>
+                <ChevronRight className="w-3 h-3" />
+                <span>Contrat</span>
+              </div>
+              <h1 className="font-heading text-xl font-bold text-foreground">{contract.name}</h1>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <TypeBadge type={contract.type} />
+          <button
+            onClick={() => setEditModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            Editer
+          </button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-border overflow-x-auto">
+        {CONTRACT_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={cn(
+              "px-4 py-2.5 text-sm font-medium transition-colors relative whitespace-nowrap",
+              activeTab === tab.key
+                ? "text-primary"
+                : "text-foreground-muted hover:text-foreground"
+            )}
+          >
+            {tab.label}
+            {activeTab === tab.key && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      {activeTab === "details" && <ContractDetailsSubTab contract={contract} networkName={networkName} />}
+      {activeTab === "cpos" && <ContractCposSubTab contractId={contract.id} />}
+      {activeTab === "agreements" && <ContractAgreementsSubTab contractId={contract.id} />}
+      {activeTab === "billing" && <ContractBillingSubTab contractId={contract.id} />}
+
+      {/* Edit SlideOver */}
+      <SlideOver open={editModalOpen} onClose={() => setEditModalOpen(false)} title="Modifier le contrat">
+        <form onSubmit={(e) => { e.preventDefault(); updateMutation.mutate(editForm); }} className="p-6 space-y-5">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Type</label>
+              <select
+                value={editForm.type}
+                onChange={(e) => setEditForm((f) => ({ ...f, type: e.target.value as CpoContract["type"] }))}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50"
+              >
+                <option value="internal">Interne</option>
+                <option value="external">Externe</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Nom</label>
+              <input required value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Reseau CPO</label>
+            <select value={editForm.network_id} onChange={(e) => setEditForm((f) => ({ ...f, network_id: e.target.value }))}
+              className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50">
+              <option value="">-- Aucun --</option>
+              {(networks ?? []).map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Code Pays</label>
+              <input required value={editForm.country_code} onChange={(e) => setEditForm((f) => ({ ...f, country_code: e.target.value }))} maxLength={2}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50 uppercase" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">ID Groupe</label>
+              <input value={editForm.party_id} onChange={(e) => setEditForm((f) => ({ ...f, party_id: e.target.value }))}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Code Contrat</label>
+              <input value={editForm.contract_code} onChange={(e) => setEditForm((f) => ({ ...f, contract_code: e.target.value }))}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Devise</label>
+              <input value={editForm.currency} onChange={(e) => setEditForm((f) => ({ ...f, currency: e.target.value }))}
+                className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50 uppercase" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-foreground-muted mb-1.5">URL</label>
+            <input type="url" value={editForm.url} onChange={(e) => setEditForm((f) => ({ ...f, url: e.target.value }))}
+              className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50" />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={() => setEditModalOpen(false)} className="px-4 py-2 text-sm text-foreground-muted hover:text-foreground border border-border rounded-xl transition-colors">Annuler</button>
+            <button type="submit" disabled={updateMutation.isPending} className="px-5 py-2 bg-primary text-white text-sm font-semibold rounded-xl hover:bg-primary/90 disabled:opacity-50 transition-colors">
+              {updateMutation.isPending ? "..." : "Enregistrer"}
+            </button>
+          </div>
+        </form>
+      </SlideOver>
+    </div>
+  );
+}
+
+// ── Contract Sub-Tab: Details ─────────────────────────────────
+
+function ContractDetailsSubTab({ contract, networkName }: { contract: CpoContract; networkName: string }) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-surface border border-border rounded-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h3 className="text-sm font-semibold text-foreground">Details</h3>
+          <TypeBadge type={contract.type} />
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          <ContractDetailRow label="Reseau CPO" value={networkName} isLink />
+          <ContractDetailRow label="Code pays" value={contract.country_code} />
+          <ContractDetailRow label="Identifiant de groupe" value={contract.party_id ?? "\u2014"} />
+          <ContractDetailRow label="Devise" value={contract.currency} />
+          <ContractDetailRow label="Identifiant externe" value={contract.id} />
+          {contract.url ? (
+            <div className="grid grid-cols-[200px_1fr] gap-4 items-start">
+              <span className="text-sm font-medium text-foreground-muted">URL</span>
+              <a href={contract.url} target="_blank" rel="noopener noreferrer" className="text-sm text-primary hover:underline inline-flex items-center gap-1">
+                {contract.url} <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          ) : (
+            <ContractDetailRow label="URL" value="\u2014" />
+          )}
+          <ContractDetailRow
+            label="Derniere mise a jour"
+            value={contract.updated_at ? `${formatDateFull(contract.updated_at)}${contract.updated_by ? ` (${contract.updated_by})` : ""}` : "\u2014"}
+          />
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        <div className="bg-surface border border-border rounded-2xl">
+          <div className="px-6 py-4 border-b border-border">
+            <h3 className="text-sm font-semibold text-foreground">Code contrat</h3>
+          </div>
+          <div className="px-6 py-5">
+            {contract.contract_code ? (
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                  <FileSignature className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <p className="text-lg font-bold text-foreground font-mono">{contract.contract_code}</p>
+                  <p className="text-xs text-foreground-muted">Code unique du contrat</p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-foreground-muted">Aucun code contrat defini</p>
+            )}
+          </div>
+        </div>
+
+        <div className="bg-surface border border-border rounded-2xl">
+          <div className="px-6 py-4 border-b border-border">
+            <h3 className="text-sm font-semibold text-foreground">Remarques</h3>
+          </div>
+          <div className="px-6 py-5">
+            <p className="text-sm text-foreground-muted">Aucune remarque</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContractDetailRow({ label, value, isLink }: { label: string; value: string; isLink?: boolean }) {
+  return (
+    <div className="grid grid-cols-[200px_1fr] gap-4 items-start">
+      <span className="text-sm font-medium text-foreground-muted">{label}</span>
+      {isLink ? (
+        <span className="text-sm text-primary">{value}</span>
+      ) : (
+        <span className="text-sm text-foreground">{value}</span>
+      )}
+    </div>
+  );
+}
+
+// ── Contract Sub-Tab: CPOs ────────────────────────────────────
+
+function ContractCposSubTab({ contractId }: { contractId: string }) {
+  const [search, setSearch] = useState("");
+
+  const { data: cpoOperators, isLoading } = useQuery<CpoOperator[]>({
+    queryKey: ["cpo-operators-for-contract", contractId],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("cpo_operators").select("id, name, code, color").order("name");
+      if (error) return [];
+      return (data ?? []) as CpoOperator[];
+    },
+  });
+
+  const filtered = useMemo(() => {
+    let list = cpoOperators ?? [];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((c) => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q));
+    }
+    return list;
+  }, [cpoOperators, search]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Building2 className="w-4 h-4 text-foreground-muted" />
+        <h3 className="text-sm font-semibold text-foreground">CPO ({filtered.length})</h3>
+      </div>
+
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+        <input type="text" placeholder="Rechercher..." value={search} onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus" />
+      </div>
+
+      {isLoading ? (
+        <TableSkeleton rows={4} cols={8} />
+      ) : filtered.length === 0 ? (
+        <EmptyState icon={Building2} message="Aucun CPO" />
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-border">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Type</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Nom</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Identifiant externe</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Tariff Group</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">CRM Customer ID</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">N&#176; TVA</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Afficher nom OCPI</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">URL</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filtered.map((cpo) => (
+                  <tr key={cpo.id} className="hover:bg-surface-elevated/50 transition-colors">
+                    <td className="px-4 py-3"><TypeBadge type="internal" /></td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {cpo.color && <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cpo.color }} />}
+                        <span className="text-sm font-medium text-foreground">{cpo.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted font-mono">{cpo.code}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{"\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{"\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{"\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{cpo.name}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{"\u2014"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Contract Sub-Tab: Accords ─────────────────────────────────
+
+function ContractAgreementsSubTab({ contractId }: { contractId: string }) {
+  const [search, setSearch] = useState("");
+  const [filterTab, setFilterTab] = useState<"all" | "active" | "expired">("all");
+  const [page, setPage] = useState(1);
+
+  const { data: agreements, isLoading } = useQuery<RoamingAgreement[]>({
+    queryKey: ["agreements-for-contract", contractId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("roaming_agreements")
+        .select(`id, status, management, connection_method, valid_from, valid_to, professional_contact, professional_email, updated_by, updated_at,
+          emsp_network:emsp_networks(name), emsp_contract:emsp_contracts(name), cpo_contract:cpo_contracts(name)`)
+        .eq("cpo_contract_id", contractId)
+        .order("updated_at", { ascending: false });
+      if (error) return [];
+      return (data ?? []) as unknown as RoamingAgreement[];
+    },
+  });
+
+  const filtered = useMemo(() => {
+    let list = agreements ?? [];
+    if (filterTab === "active") list = list.filter((a) => a.status === "active");
+    else if (filterTab === "expired") list = list.filter((a) => a.status === "expired");
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((a) =>
+        a.emsp_network?.name?.toLowerCase().includes(q) || a.management?.toLowerCase().includes(q) || a.connection_method?.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [agreements, filterTab, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+
+  const tabCounts = useMemo(() => {
+    const list = agreements ?? [];
+    return { all: list.length, active: list.filter((a) => a.status === "active").length, expired: list.filter((a) => a.status === "expired").length };
+  }, [agreements]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Handshake className="w-4 h-4 text-foreground-muted" />
+        <h3 className="text-sm font-semibold text-foreground">Accords ({tabCounts.all})</h3>
+      </div>
+
+      <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-1 w-fit">
+        {([
+          { key: "all" as const, label: "Tout" },
+          { key: "active" as const, label: "Valide" },
+          { key: "expired" as const, label: "Expire" },
+        ]).map((tab) => (
+          <button key={tab.key} onClick={() => { setFilterTab(tab.key); setPage(1); }}
+            className={cn("px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+              filterTab === tab.key ? "bg-primary/15 text-primary" : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated")}>
+            {tab.label} <span className="opacity-60">{tabCounts[tab.key]}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+        <input type="text" placeholder="Rechercher..." value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          className="w-full pl-9 pr-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus" />
+      </div>
+
+      {isLoading ? (
+        <TableSkeleton rows={5} cols={9} />
+      ) : filtered.length === 0 ? (
+        <EmptyState icon={Handshake} message="Aucun accord lie a ce contrat" />
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-border">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Validite</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Gestion</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Reseau eMSP</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Contrat eMSP</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Methode connexion</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Valide a partir de</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Valable jusqu'au</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase">Pro. Contact</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {paginated.map((a) => (
+                  <tr key={a.id} className="hover:bg-surface-elevated/50 transition-colors">
+                    <td className="px-4 py-3"><StatusBadge status={a.status} /></td>
+                    <td className="px-4 py-3 text-sm text-foreground">{a.management ?? "\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground font-medium">{a.emsp_network?.name ?? "\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{a.emsp_contract?.name ?? "\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{a.connection_method ?? "\u2014"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted whitespace-nowrap">{formatDate(a.valid_from)}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted whitespace-nowrap">{a.valid_to ? formatDate(a.valid_to) : "Indefinie"}</td>
+                    <td className="px-4 py-3 text-sm text-foreground-muted">{a.professional_contact ?? "\u2014"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+              <span className="text-xs text-foreground-muted">{(safePage - 1) * PAGE_SIZE + 1}&ndash;{Math.min(safePage * PAGE_SIZE, filtered.length)} sur {filtered.length}</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage === 1} className="p-1.5 rounded-lg text-foreground-muted hover:bg-surface-elevated disabled:opacity-30 transition-colors"><ChevronLeft className="w-4 h-4" /></button>
+                <span className="text-xs text-foreground-muted px-2">{safePage} / {totalPages}</span>
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage === totalPages} className="p-1.5 rounded-lg text-foreground-muted hover:bg-surface-elevated disabled:opacity-30 transition-colors"><ChevronRight className="w-4 h-4" /></button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Contract Sub-Tab: Regles de facturation en gros ───────────
+
+type ContractBillingFilter = "all" | "network" | "contract" | "agreement";
+
+function ContractBillingSubTab({ contractId }: { contractId: string }) {
+  const [filterTab, setFilterTab] = useState<ContractBillingFilter>("all");
+  const [search, setSearch] = useState("");
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [openActions, setOpenActions] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
+
+  const { data: rules, isLoading } = useQuery<ReimbursementRule[]>({
+    queryKey: ["billing-rules-for-contract", contractId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("reimbursement_rules")
+        .select(`id, status, tariff_code, country_code, cpo_name, cpo_entity, emsp_name, emsp_entity,
+          retail_price, restrictions, price_per_kwh, price_per_min, start_fee, idle_fee_per_min,
+          currency, valid_from, valid_to, remarks, updated_by, updated_at,
+          cpo_network:cpo_networks(name), cpo_contract:cpo_contracts(name),
+          emsp_network:emsp_networks(name), emsp_contract:emsp_contracts(name)`)
+        .eq("cpo_contract_id", contractId)
+        .order("tariff_code", { ascending: true });
+      if (error) return [];
+      return (data ?? []) as unknown as ReimbursementRule[];
+    },
+  });
+
+  const expireMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("reimbursement_rules")
+        .update({ status: "expired", valid_to: new Date().toISOString().split("T")[0] }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["billing-rules-for-contract", contractId] });
+      setOpenActions(null);
+      toastSuccess("Regle expiree", "La regle a ete marquee comme expiree");
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
+  const filtered = useMemo(() => {
+    let list = rules ?? [];
+    if (filterTab === "network") list = list.filter((r) => r.cpo_network?.name);
+    else if (filterTab === "contract") list = list.filter((r) => r.cpo_contract?.name);
+    else if (filterTab === "agreement") list = list.filter((r) => r.emsp_network?.name);
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter((r) =>
+        r.cpo_name?.toLowerCase().includes(q) || r.emsp_name?.toLowerCase().includes(q) ||
+        r.tariff_code?.toLowerCase().includes(q) || r.cpo_network?.name?.toLowerCase().includes(q) || r.emsp_network?.name?.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [rules, filterTab, search]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, ReimbursementRule[]>();
+    for (const r of filtered) {
+      const key = r.tariff_code ?? r.id;
+      const arr = map.get(key) ?? [];
+      arr.push(r);
+      map.set(key, arr);
+    }
+    return Array.from(map.entries());
+  }, [filtered]);
+
+  const toggleCollapse = (key: string) => {
+    setCollapsed((prev) => { const next = new Set(prev); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  };
+
+  const thClass = "px-3 py-2.5 text-left text-[11px] font-semibold text-foreground-muted uppercase tracking-wider whitespace-nowrap";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Receipt className="w-4 h-4 text-foreground-muted" />
+          <h3 className="text-sm font-semibold text-foreground">Regles de facturation</h3>
+        </div>
+        <button className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-semibold hover:bg-primary/90 transition-colors">
+          <Plus className="w-3.5 h-3.5" /> Ajouter une regle
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-1 w-fit">
+        {([
+          { key: "all" as ContractBillingFilter, label: "Tout" },
+          { key: "network" as ContractBillingFilter, label: "Reseau" },
+          { key: "contract" as ContractBillingFilter, label: "Contrat" },
+          { key: "agreement" as ContractBillingFilter, label: "Accord" },
+        ]).map((tab) => (
+          <button key={tab.key} onClick={() => setFilterTab(tab.key)}
+            className={cn("px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+              filterTab === tab.key ? "bg-primary/15 text-primary" : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated")}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="relative max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+        <input type="text" placeholder="Rechercher..." value={search} onChange={(e) => setSearch(e.target.value)}
+          className="w-full pl-9 pr-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus" />
+      </div>
+
+      {isLoading ? (
+        <TableSkeleton rows={5} cols={10} />
+      ) : grouped.length === 0 ? (
+        <EmptyState icon={Receipt} message="Aucune regle de facturation" />
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="border-b border-border">
+                <tr>
+                  <th className={thClass}>Reseau CPO</th>
+                  <th className={thClass}>Contrat CPO</th>
+                  <th className={thClass}>Pays</th>
+                  <th className={thClass}>CPO</th>
+                  <th className={thClass}>Reseau eMSP</th>
+                  <th className={thClass}>Contrat eMSP</th>
+                  <th className={thClass}>eMSP</th>
+                  <th className={thClass}>Forfait vente detail</th>
+                  <th className={thClass}>Restrictions</th>
+                  <th className={thClass}>Date debut</th>
+                  <th className={cn(thClass, "text-right w-20")} />
+                </tr>
+              </thead>
+              <tbody>
+                {grouped.map(([tariffCode, groupRules]) => {
+                  const isCollapsed = collapsed.has(tariffCode);
+                  const currency = groupRules[0]?.currency ?? "EUR";
+                  return (
+                    <BillingGroup
+                      key={tariffCode}
+                      tariffCode={tariffCode}
+                      currency={currency}
+                      rules={groupRules}
+                      isCollapsed={isCollapsed}
+                      onToggle={() => toggleCollapse(tariffCode)}
+                      openActions={openActions}
+                      onOpenActions={setOpenActions}
+                      onExpire={(id) => expireMutation.mutate(id)}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -24,12 +24,10 @@ import {
   PieChart,
   Network,
   FileSignature,
-  Receipt,
   Handshake,
   Building2,
   UserCheck,
   ScanLine,
-  Home,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -79,7 +77,6 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Network",
         items: [
           { to: "/cpo-networks", label: "Réseaux CPO", icon: Network },
-          { to: "/cpo-contracts", label: "Contrats CPO", icon: FileSignature },
         ],
       },
       {

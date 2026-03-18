@@ -1,3 +1,8 @@
+// ============================================================
+// EZDrive — Stations Page (GreenFlux-style)
+// List view → click → full page detail with 6 tabs
+// ============================================================
+
 import { useState, useMemo, useCallback } from "react";
 import { Download, Plus } from "lucide-react";
 import { useStations } from "@/hooks/useStations";
@@ -7,7 +12,7 @@ import { useCpo } from "@/contexts/CpoContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { FilterBar } from "@/components/ui/FilterBar";
 import { StationTable } from "./StationTable";
-import { StationDetailDrawer } from "./StationDetailDrawer";
+import { StationDetailView } from "./StationDetailView";
 import { StationFormModal } from "./StationFormModal";
 import { TableSkeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
@@ -47,14 +52,14 @@ export function StationsPage() {
       "En ligne": s.is_online ? "Oui" : "Non",
       "Puissance (kW)": s.max_power_kw ?? "",
       Fabricant: s.charge_point_vendor ?? "",
-      Modèle: s.charge_point_model ?? "",
+      Modele: s.charge_point_model ?? "",
       Firmware: s.firmware_version ?? "",
       Protocole: s.protocol_version ?? "",
       "Type borne": s.charger_type ?? "",
       Vitesse: s.charging_speed ?? "",
       "Remote Start/Stop": s.remote_manageable ? "Oui" : "Non",
       "Heures dans statut": s.hours_in_status != null ? Math.round(s.hours_in_status) : "",
-      "Dernière sync": s.last_synced_at ?? "",
+      "Derniere sync": s.last_synced_at ?? "",
     }));
     downloadCSV(rows, `ezdrive-bornes-${todayISO()}.csv`);
   }
@@ -69,19 +74,35 @@ export function StationsPage() {
         const q = filters.search.toLowerCase();
         return (
           s.name.toLowerCase().includes(q) ||
-          s.gfx_id.toLowerCase().includes(q) ||
+          (s.gfx_id?.toLowerCase().includes(q) ?? false) ||
           (s.address?.toLowerCase().includes(q) ?? false) ||
-          (s.city?.toLowerCase().includes(q) ?? false)
+          (s.city?.toLowerCase().includes(q) ?? false) ||
+          (s.charge_point_vendor?.toLowerCase().includes(q) ?? false)
         );
       }
       return true;
     });
   }, [stations, filters]);
 
+  // Level 2: Station detail (full page, GreenFlux-style)
+  if (selectedStation) {
+    return (
+      <StationDetailView
+        station={selectedStation}
+        onBack={() => setSelectedStation(null)}
+        onEdit={(s) => { setSelectedStation(null); setEditStation(s); }}
+        onDeleted={handleStationUpdated}
+      />
+    );
+  }
+
+  // Level 1: Station list
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="font-heading text-xl font-bold">Bornes Live</h1>
+        <h1 className="font-heading text-xl font-bold">
+          Stations de charge ({stations?.length ?? 0})
+        </h1>
         <div className="flex items-center gap-3">
           <span className="text-sm text-foreground-muted">
             {filtered.length} / {stations?.length ?? 0} bornes
@@ -99,20 +120,19 @@ export function StationsPage() {
             className="flex items-center gap-1.5 px-4 py-2 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            Nouvelle borne
+            + Ajouter Nouveau
           </button>
         </div>
       </div>
 
       <PageHelp
-        summary="Vue temps réel de toutes vos bornes de recharge avec filtres et export"
+        summary="Vue temps reel de toutes vos bornes de recharge avec filtres et export"
         items={[
-          { label: "Filtres", description: "Filtrez par CPO, territoire, statut OCPP ou recherchez par nom/adresse." },
-          { label: "Statuts OCPP", description: "Available (libre), Charging (en charge), Faulted (en panne), Unavailable (hors service), Preparing/Finishing (en transition)." },
-          { label: "Fiche détaillée", description: "Cliquez sur une borne pour ouvrir sa fiche avec tous ses détails techniques (firmware, connecteurs, historique)." },
-          { label: "Export CSV", description: "Le bouton Export télécharge la liste filtrée au format CSV pour Excel." },
+          { label: "Filtres", description: "Filtrez par CPO, territoire, statut OCPP ou recherchez par nom/adresse/identifiant." },
+          { label: "Statuts OCPP", description: "Available (libre), Charging (en charge), Faulted (en panne), Unavailable (hors service)." },
+          { label: "Fiche detaillee", description: "Cliquez sur une borne pour ouvrir sa fiche complete avec 6 onglets (Details, Diagnostic, Facturation, Configuration, Autorisation, Planification)." },
+          { label: "Export CSV", description: "Le bouton Export telecharge la liste filtree au format CSV pour Excel." },
         ]}
-        tips={["Les bornes se synchronisent toutes les 5 minutes via GreenFlux. Le statut 'Faulted' nécessite une intervention terrain."]}
       />
 
       <FilterBar
@@ -131,20 +151,11 @@ export function StationsPage() {
         />
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-48 text-foreground-muted">
-          <p className="text-lg mb-1">Aucune borne trouvée</p>
+          <p className="text-lg mb-1">Aucune borne trouvee</p>
           <p className="text-sm">Ajustez vos filtres ou lancez une synchronisation.</p>
         </div>
       ) : (
         <StationTable stations={filtered} onSelect={(s) => setSelectedStation(s)} />
-      )}
-
-      {selectedStation && (
-        <StationDetailDrawer
-          station={selectedStation}
-          onClose={() => setSelectedStation(null)}
-          onEdit={(s) => { setSelectedStation(null); setEditStation(s); }}
-          onDeleted={handleStationUpdated}
-        />
       )}
 
       {/* Create / Edit Modal */}

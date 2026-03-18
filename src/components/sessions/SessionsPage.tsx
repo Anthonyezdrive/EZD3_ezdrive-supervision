@@ -27,7 +27,6 @@ interface Transaction {
   transaction_id: number;
   chargepoint_id: string;
   connector_id: number;
-  station_id: string;
   consumer_id: string | null;
   id_tag: string | null;
   status: "Active" | "Completed" | "Faulted" | "Timeout";
@@ -37,7 +36,20 @@ interface Transaction {
   meter_stop: number | null;
   energy_kwh: number | null;
   stop_reason: string | null;
-  stations: { name: string; city: string; address: string };
+  ocpp_chargepoints: {
+    identity: string;
+    stations: { name: string; city: string | null; address: string | null } | null;
+  } | null;
+}
+
+/** Safely extract station info from nested join */
+function getStation(tx: Transaction): { name: string; city: string; address: string } {
+  const s = tx.ocpp_chargepoints?.stations;
+  return {
+    name: s?.name ?? tx.ocpp_chargepoints?.identity ?? tx.chargepoint_id,
+    city: s?.city ?? "",
+    address: s?.address ?? "",
+  };
 }
 
 interface OcpiCdr {
@@ -242,13 +254,13 @@ function SessionDetailDrawer({
           <div className="bg-surface-elevated border border-border rounded-xl p-4 space-y-1">
             <p className="text-xs text-foreground-muted">Station</p>
             <p className="text-sm font-semibold text-foreground">
-              {session.stations.name}
+              {getStation(session).name}
             </p>
             <p className="text-xs text-foreground-muted">
-              {session.stations.address
-                ? `${session.stations.address}, `
+              {getStation(session).address
+                ? `${getStation(session).address}, `
                 : ""}
-              {session.stations.city}
+              {getStation(session).city}
             </p>
           </div>
 
@@ -376,7 +388,7 @@ export function SessionsPage() {
 
         let query = supabase
           .from("ocpp_transactions")
-          .select("*, stations(name, city, address)", { count: "exact" })
+          .select("*, ocpp_chargepoints(identity, stations(name, city, address))", { count: "exact" })
           .order("started_at", { ascending: false })
           .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
@@ -528,12 +540,16 @@ export function SessionsPage() {
     if (!searchQuery.trim()) return sessionsData.data;
     const q = searchQuery.toLowerCase();
     return sessionsData.data.filter(
-      (t) =>
-        String(t.transaction_id).includes(q) ||
-        t.chargepoint_id.toLowerCase().includes(q) ||
-        t.stations.name.toLowerCase().includes(q) ||
-        t.stations.city.toLowerCase().includes(q) ||
-        (t.id_tag?.toLowerCase().includes(q) ?? false)
+      (t) => {
+        const stn = getStation(t);
+        return (
+          String(t.transaction_id).includes(q) ||
+          t.chargepoint_id.toLowerCase().includes(q) ||
+          stn.name.toLowerCase().includes(q) ||
+          stn.city.toLowerCase().includes(q) ||
+          (t.id_tag?.toLowerCase().includes(q) ?? false)
+        );
+      }
     );
   }, [sessionsData?.data, searchQuery]);
 
@@ -550,8 +566,8 @@ export function SessionsPage() {
   function handleExport() {
     const rows = (filteredSessions ?? []).map((t) => ({
       "ID Transaction": t.transaction_id,
-      Borne: t.stations.name,
-      Ville: t.stations.city,
+      Borne: getStation(t).name,
+      Ville: getStation(t).city,
       Connecteur: t.connector_id,
       "Tag RFID": t.id_tag ?? "",
       Début: t.started_at,
@@ -923,10 +939,10 @@ export function SessionsPage() {
                           <td className="px-4 py-3">
                             <div>
                               <p className="text-sm font-medium text-foreground">
-                                {tx.stations.name}
+                                {getStation(tx).name}
                               </p>
                               <p className="text-xs text-foreground-muted">
-                                {tx.stations.city}
+                                {getStation(tx).city}
                               </p>
                             </div>
                           </td>

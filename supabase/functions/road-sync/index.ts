@@ -3,6 +3,40 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.0";
 import { corsHeaders } from "../_shared/cors.ts";
 import { roadPost, ROAD_PROVIDER_ID } from "../_shared/road-client.ts";
 
+// Secondary ROAD provider for VCity AG (optional — falls back to disabled if not set)
+const ROAD_VCITY_PROVIDER_ID = Deno.env.get("ROAD_VCITY_PROVIDER_ID") ?? "";
+
+// Mapping: each ROAD account → target CPO code
+interface RoadAccountConfig {
+  accountId: string;
+  cpoCode: string;
+  label: string;
+}
+
+function getRoadAccounts(): RoadAccountConfig[] {
+  const accounts: RoadAccountConfig[] = [];
+
+  // Primary ROAD account → EZDrive Réunion
+  if (ROAD_PROVIDER_ID) {
+    accounts.push({
+      accountId: ROAD_PROVIDER_ID,
+      cpoCode: "ezdrive-reunion",
+      label: "EZDrive Réunion",
+    });
+  }
+
+  // Secondary ROAD account → VCity AG
+  if (ROAD_VCITY_PROVIDER_ID) {
+    accounts.push({
+      accountId: ROAD_VCITY_PROVIDER_ID,
+      cpoCode: "vcity-ag",
+      label: "VCity AG",
+    });
+  }
+
+  return accounts;
+}
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -86,9 +120,9 @@ function extractRoadId(ctrl: Record<string, unknown>): string | null {
 }
 
 // -------------------------------------------------------
-// Paginated fetch of all evse-controllers
+// Paginated fetch of all evse-controllers for a given account
 // -------------------------------------------------------
-async function fetchAllControllers(): Promise<{
+async function fetchAllControllers(accountId: string, label: string): Promise<{
   controllers: Array<Record<string, unknown>>;
   sample: string;
 }> {
@@ -99,13 +133,13 @@ async function fetchAllControllers(): Promise<{
   const firstRes = await roadPost("/1/evse-controllers/search", {
     limit: LIMIT,
     skip: 0,
-    accountId: ROAD_PROVIDER_ID,
+    accountId,
   });
 
   if (!firstRes.ok) {
     const errText = await firstRes.text();
     throw new Error(
-      `ROAD evse-controllers error ${firstRes.status}: ${errText}`
+      `ROAD evse-controllers error ${firstRes.status} for ${label}: ${errText}`
     );
   }
 
@@ -126,7 +160,7 @@ async function fetchAllControllers(): Promise<{
     const pageRes = await roadPost("/1/evse-controllers/search", {
       limit: LIMIT,
       skip,
-      accountId: ROAD_PROVIDER_ID,
+      accountId,
     });
     if (!pageRes.ok) break;
 
@@ -140,7 +174,7 @@ async function fetchAllControllers(): Promise<{
   }
 
   console.log(
-    `[road-sync] Fetched ${allControllers.length} / ${total} evse-controllers`
+    `[road-sync] Fetched ${allControllers.length} / ${total} evse-controllers for ${label}`
   );
   return { controllers: allControllers, sample };
 }
@@ -164,30 +198,7 @@ serve(async (req: Request) => {
   };
 
   try {
-    // 1. Fetch all ROAD evse-controllers
-    console.log("[road-sync] Starting sync with ROAD provider:", ROAD_PROVIDER_ID);
-    const { controllers, sample } = await fetchAllControllers();
-    result.raw_sample = sample;
-
-    if (controllers.length === 0) {
-      console.warn(
-        "[road-sync] No controllers returned – token may not have provider access yet"
-      );
-      return new Response(
-        JSON.stringify({
-          ...result,
-          message:
-            "No evse-controllers returned from ROAD API. " +
-            "The application token may not yet be linked to the EZDrive sub-provider " +
-            "(provider ID: " + ROAD_PROVIDER_ID + "). " +
-            "Contact ROAD account manager (Myriam) to confirm credential linkage.",
-          raw_sample: sample,
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // 2. Load DB references (only ROAD stations)
+    // 1. Load DB references (only ROAD stations)
     const [
       { data: existingStations },
       { data: territories },
@@ -217,16 +228,62 @@ serve(async (req: Request) => {
       ])
     );
 
-    // Default CPO for ROAD stations = EZDrive AG (the operational CPO)
-    const ezdriveAgCpoId = cpos?.find(
-      (c: { code: string }) => c.code === "ezdrive-ag"
-    )?.id;
-    const defaultCpoId = ezdriveAgCpoId ?? null;
+    // Build CPO code → id lookup
+    const cpoMap = new Map(
+      (cpos ?? []).map((c: { code: string; id: string }) => [c.code, c.id])
+    );
+
+    // 2. Iterate over each ROAD account (EZDrive Réunion, VCity AG, etc.)
+    const roadAccounts = getRoadAccounts();
+
+    if (roadAccounts.length === 0) {
+      return new Response(
+        JSON.stringify({
+          ...result,
+          message: "No ROAD provider IDs configured. Set ROAD_PROVIDER_ID and/or ROAD_VCITY_PROVIDER_ID.",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const seenRoadIds = new Set<string>();
+    const accountResults: Array<{ label: string; count: number; cpoCode: string }> = [];
 
-    // 3. Process each evse-controller
-    for (const ctrl of controllers) {
+    for (const account of roadAccounts) {
+      console.log(`[road-sync] Starting sync for ${account.label} (accountId: ${account.accountId}, cpo: ${account.cpoCode})`);
+
+      let controllers: Array<Record<string, unknown>> = [];
+      let sample = "";
+
+      try {
+        const fetched = await fetchAllControllers(account.accountId, account.label);
+        controllers = fetched.controllers;
+        sample = fetched.sample;
+        if (!result.raw_sample) result.raw_sample = sample;
+      } catch (fetchErr) {
+        const msg = `Failed to fetch controllers for ${account.label}: ${(fetchErr as Error).message}`;
+        console.warn(`[road-sync] ${msg}`);
+        result.errors.push(msg);
+        continue;
+      }
+
+      if (controllers.length === 0) {
+        console.warn(`[road-sync] No controllers for ${account.label} – skipping`);
+        accountResults.push({ label: account.label, count: 0, cpoCode: account.cpoCode });
+        continue;
+      }
+
+      // Resolve CPO ID for this account
+      const cpoId = cpoMap.get(account.cpoCode) ?? null;
+      if (!cpoId) {
+        result.errors.push(`CPO code "${account.cpoCode}" not found in cpo_operators for ${account.label}`);
+        continue;
+      }
+
+      let accountSynced = 0;
+
+      // 3. Process each evse-controller for this account
+      for (const ctrl of controllers) {
       try {
         const roadId = extractRoadId(ctrl);
         if (!roadId) {
@@ -342,8 +399,8 @@ serve(async (req: Request) => {
           ? (territoryMap.get(territoryCode) ?? null)
           : null;
 
-        // --- CPO (all ROAD stations → ROAD EZDrive by default) ---
-        const cpoId = defaultCpoId;
+        // --- CPO (assigned per ROAD account) ---
+        // cpoId comes from the outer account loop
 
         // --- Location ID for reference ---
         const locationId =
@@ -440,12 +497,17 @@ serve(async (req: Request) => {
         }
 
         result.total_synced++;
+        accountSynced++;
       } catch (ctrlError) {
         result.errors.push(
-          `Controller error: ${(ctrlError as Error).message}`
+          `Controller error (${account.label}): ${(ctrlError as Error).message}`
         );
       }
     }
+
+      accountResults.push({ label: account.label, count: accountSynced, cpoCode: account.cpoCode });
+      console.log(`[road-sync] ${account.label}: synced ${accountSynced} controllers → CPO ${account.cpoCode}`);
+    } // end of roadAccounts loop
 
     // 4. Mark unseen ROAD stations as offline
     if (seenRoadIds.size > 0 && existingStations) {
@@ -470,7 +532,7 @@ serve(async (req: Request) => {
 
     console.log("[road-sync] Done:", JSON.stringify(result));
 
-    return new Response(JSON.stringify(result), {
+    return new Response(JSON.stringify({ ...result, accounts: accountResults }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

@@ -1,20 +1,111 @@
+// ============================================================
+// EZDrive — Station Table (GreenFlux-style)
+// Columns: Connexion, Identifiant, Adresse, Ville, Etat, Chargement, Connecteurs, Fabricant
+// ============================================================
+
 import { useState, useMemo } from "react";
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Wifi, WifiOff } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { formatDuration } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { Station, OCPPStatus } from "@/types/station";
 
 type SortKey =
+  | "connectivity_status"
   | "name"
+  | "address"
+  | "city"
   | "ocpp_status"
-  | "cpo_name"
-  | "territory_name"
-  | "max_power_kw"
-  | "hours_in_status"
-  | "connectivity_status";
+  | "charge_point_vendor";
 type SortDir = "asc" | "desc";
 
 const PAGE_SIZE = 50;
+
+// -- Connection badge (En Ligne / Hors Ligne / Inconnu) -------
+
+function ConnectionBadge({ status }: { status: string | null }) {
+  if (status === "Online") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold bg-emerald-500/10 text-emerald-400 border-emerald-500/25">
+        <span className="w-2 h-2 rounded-full bg-emerald-400" />
+        En Ligne
+      </span>
+    );
+  }
+  if (status === "Offline") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold bg-red-500/10 text-red-400 border-red-500/25">
+        <span className="w-2 h-2 rounded-full bg-red-400" />
+        Hors Ligne
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold bg-gray-500/10 text-gray-400 border-gray-500/25">
+      Inconnu
+    </span>
+  );
+}
+
+// -- EVSE state badge (Active / Inconnu) ----------------------
+
+function StateBadge({ station }: { station: Station }) {
+  // Derive "Active" if station has any connector with a known status
+  const hasActive = station.ocpp_status === "Available" || station.ocpp_status === "Charging" || station.ocpp_status === "Preparing" || station.ocpp_status === "Finishing";
+  if (hasActive) {
+    return (
+      <span className="inline-flex items-center rounded-lg border px-2 py-0.5 text-[11px] font-medium bg-emerald-500/10 text-emerald-400 border-emerald-500/25">
+        Active
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-lg border px-2 py-0.5 text-[11px] font-medium bg-gray-500/10 text-gray-400 border-gray-500/25">
+      Inconnu
+    </span>
+  );
+}
+
+// -- Connector dots (green = Available, blue = Charging, etc.) -
+
+function ConnectorDots({ station }: { station: Station }) {
+  const connectors = (() => {
+    if (!station.connectors) return [];
+    if (Array.isArray(station.connectors)) return station.connectors;
+    if (typeof station.connectors === "string") {
+      try { return JSON.parse(station.connectors); } catch { return []; }
+    }
+    return [];
+  })();
+
+  if (connectors.length === 0) return <span className="text-xs text-foreground-muted">{"\u2014"}</span>;
+
+  const statusColors: Record<string, string> = {
+    Available: "#00D4AA",
+    Charging: "#4ECDC4",
+    Preparing: "#F39C12",
+    Finishing: "#3498DB",
+    SuspendedEVSE: "#E67E22",
+    SuspendedEV: "#E67E22",
+    Unavailable: "#BDC3C7",
+    Faulted: "#FF6B6B",
+    Unknown: "#6B7280",
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      {connectors.map((c: { status?: string }, i: number) => (
+        <span
+          key={i}
+          className="w-3.5 h-3.5 rounded-full border border-white/10"
+          style={{ backgroundColor: statusColors[c.status ?? "Unknown"] ?? "#6B7280" }}
+          title={c.status ?? "Unknown"}
+        />
+      ))}
+    </div>
+  );
+}
+
+// -- Main table -----------------------------------------------
 
 interface StationTableProps {
   stations: Station[];
@@ -71,26 +162,29 @@ export function StationTable({ stations, onSelect }: StationTableProps) {
         <table className="w-full">
           <thead className="border-b border-border">
             <tr>
-              <th className={thClass} onClick={() => handleSort("name")}>
-                Borne <SortIcon col="name" />
-              </th>
-              <th className={thClass} onClick={() => handleSort("ocpp_status")}>
-                Statut <SortIcon col="ocpp_status" />
-              </th>
-              <th className={thClass} onClick={() => handleSort("cpo_name")}>
-                CPO <SortIcon col="cpo_name" />
-              </th>
-              <th className={thClass} onClick={() => handleSort("territory_name")}>
-                Territoire <SortIcon col="territory_name" />
-              </th>
-              <th className={thClass} onClick={() => handleSort("max_power_kw")}>
-                Puissance <SortIcon col="max_power_kw" />
-              </th>
               <th className={thClass} onClick={() => handleSort("connectivity_status")}>
                 Connexion <SortIcon col="connectivity_status" />
               </th>
-              <th className={thClass} onClick={() => handleSort("hours_in_status")}>
-                Durée statut <SortIcon col="hours_in_status" />
+              <th className={thClass} onClick={() => handleSort("name")}>
+                Identifiant <SortIcon col="name" />
+              </th>
+              <th className={thClass} onClick={() => handleSort("address")}>
+                Adresse <SortIcon col="address" />
+              </th>
+              <th className={thClass} onClick={() => handleSort("city")}>
+                Ville <SortIcon col="city" />
+              </th>
+              <th className={thClass} onClick={() => handleSort("ocpp_status")}>
+                Etat <SortIcon col="ocpp_status" />
+              </th>
+              <th className={cn(thClass, "cursor-default hover:text-foreground-muted")}>
+                Chargement
+              </th>
+              <th className={cn(thClass, "cursor-default hover:text-foreground-muted")}>
+                Connecteurs
+              </th>
+              <th className={thClass} onClick={() => handleSort("charge_point_vendor")}>
+                Fabricant <SortIcon col="charge_point_vendor" />
               </th>
             </tr>
           </thead>
@@ -102,47 +196,30 @@ export function StationTable({ stations, onSelect }: StationTableProps) {
                 className="hover:bg-surface-elevated/50 cursor-pointer transition-colors"
               >
                 <td className="px-4 py-3">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{station.name}</p>
-                    <p className="text-xs text-foreground-muted">
-                      {station.city ?? station.address ?? station.gfx_id}
-                      {station.charge_point_vendor && (
-                        <span className="ml-1 text-foreground-muted/60">
-                          • {station.charge_point_vendor}
-                          {station.charge_point_model ? ` ${station.charge_point_model}` : ""}
-                        </span>
-                      )}
-                    </p>
-                  </div>
+                  <ConnectionBadge status={station.connectivity_status} />
+                </td>
+                <td className="px-4 py-3">
+                  <p className="text-sm font-medium text-foreground hover:text-primary transition-colors">
+                    {station.gfx_id ?? station.name}
+                  </p>
+                </td>
+                <td className="px-4 py-3 text-sm text-foreground-muted truncate max-w-[200px]">
+                  {station.name ?? "\u2014"}
+                </td>
+                <td className="px-4 py-3 text-sm text-foreground-muted">
+                  {station.city ?? "\u2014"}
+                </td>
+                <td className="px-4 py-3">
+                  <StateBadge station={station} />
                 </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={station.ocpp_status as OCPPStatus} />
                 </td>
-                <td className="px-4 py-3 text-sm text-foreground-muted">{station.cpo_name ?? "—"}</td>
-                <td className="px-4 py-3 text-sm text-foreground-muted">{station.territory_name ?? "—"}</td>
-                <td className="px-4 py-3 text-sm text-foreground-muted">
-                  {station.max_power_kw ? `${station.max_power_kw} kW` : "—"}
-                </td>
                 <td className="px-4 py-3">
-                  {station.connectivity_status ? (
-                    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                      station.connectivity_status === "Online"
-                        ? "text-success"
-                        : "text-danger"
-                    }`}>
-                      {station.connectivity_status === "Online" ? (
-                        <Wifi className="w-3.5 h-3.5" />
-                      ) : (
-                        <WifiOff className="w-3.5 h-3.5" />
-                      )}
-                      {station.connectivity_status}
-                    </span>
-                  ) : (
-                    <span className="text-xs text-foreground-muted">—</span>
-                  )}
+                  <ConnectorDots station={station} />
                 </td>
                 <td className="px-4 py-3 text-sm text-foreground-muted">
-                  {formatDuration(station.hours_in_status)}
+                  {station.charge_point_vendor ?? "\u2014"}
                 </td>
               </tr>
             ))}
@@ -154,28 +231,27 @@ export function StationTable({ stations, onSelect }: StationTableProps) {
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-3 border-t border-border">
           <span className="text-xs text-foreground-muted">
-            {start + 1}–{Math.min(start + PAGE_SIZE, sorted.length)} sur {sorted.length} bornes
+            0 enregistrements selectionne | montrer {PAGE_SIZE} of {sorted.length} enregistrements
           </span>
           <div className="flex items-center gap-1">
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={safePage === 1}
               className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              aria-label="Page précédente"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
 
             {Array.from({ length: totalPages }, (_, i) => i + 1)
               .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
-              .reduce<(number | "…")[]>((acc, p, idx, arr) => {
-                if (idx > 0 && (p as number) - (arr[idx - 1] as number) > 1) acc.push("…");
+              .reduce<(number | "\u2026")[]>((acc, p, idx, arr) => {
+                if (idx > 0 && (p as number) - (arr[idx - 1] as number) > 1) acc.push("\u2026");
                 acc.push(p);
                 return acc;
               }, [])
               .map((p, i) =>
-                p === "…" ? (
-                  <span key={"e" + i} className="px-1.5 text-xs text-foreground-muted">…</span>
+                p === "\u2026" ? (
+                  <span key={"e" + i} className="px-1.5 text-xs text-foreground-muted">{"\u2026"}</span>
                 ) : (
                   <button
                     key={p}
@@ -195,7 +271,6 @@ export function StationTable({ stations, onSelect }: StationTableProps) {
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               disabled={safePage === totalPages}
               className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              aria-label="Page suivante"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

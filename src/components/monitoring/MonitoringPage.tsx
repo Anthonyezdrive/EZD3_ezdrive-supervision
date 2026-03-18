@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+// ============================================================
+// EZDrive — Monitoring Page (GreenFlux-style)
+// 3 tabs: Temps réel, Alertes, Maintenance & Tickets
+// Alertes tab: list of alerts + "Add alert" wizard (Setup → Configuration → Sharing)
+// ============================================================
+
+import { useMemo, useState, type KeyboardEvent } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   Wifi,
@@ -10,6 +16,18 @@ import {
   Clock,
   Server,
   Wrench,
+  Bell,
+  Plus,
+  ArrowLeft,
+  ArrowRight,
+  Trash2,
+  X,
+  ToggleLeft,
+  ToggleRight,
+  Pencil,
+  ChevronRight,
+  Info,
+  Loader2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -45,6 +63,37 @@ interface OcppChargepoint {
   is_connected: boolean;
   created_at: string;
 }
+
+interface AlertRule {
+  id: string;
+  alert_type: string;
+  title: string;
+  threshold_hours: number;
+  notification_interval_hours: number;
+  email_recipients: string[];
+  is_active: boolean;
+  charge_station_type: string;
+  deploy_state: string;
+  firmware_version: string | null;
+  chargepoint_vendor: string | null;
+  chargepoint_model: string | null;
+  chargepoint_location_id: string | null;
+  global_config: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Alert type definitions ──
+
+const ALERT_TYPES = [
+  { value: "fault_threshold", label: "Station en panne", description: "Alerte quand une borne est en statut Faulted depuis X heures" },
+  { value: "offline_threshold", label: "Station hors ligne", description: "Alerte quand une borne est hors ligne depuis X heures" },
+  { value: "unavailable_threshold", label: "Station indisponible", description: "Alerte quand une borne est indisponible depuis X heures" },
+  { value: "heartbeat_missing", label: "Heartbeat manquant", description: "Alerte quand aucun heartbeat reçu depuis X heures" },
+  { value: "session_stuck", label: "Session bloquée", description: "Alerte quand une session de charge dépasse X heures" },
+  { value: "connector_error", label: "Erreur connecteur", description: "Alerte quand un connecteur remonte une erreur" },
+  { value: "energy_threshold", label: "Seuil énergie", description: "Alerte quand la consommation dépasse un seuil kWh" },
+];
 
 // ── Queries ────────────────────────────────────────────────
 
@@ -117,12 +166,72 @@ function useChargepoints() {
   });
 }
 
+function useAlertRules() {
+  return useQuery<AlertRule[]>({
+    queryKey: ["alert-rules"],
+    retry: false,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from("alert_config")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (error) {
+          console.warn("[Monitoring] alert_config error:", error.code, error.message);
+          return [];
+        }
+        // Map the existing alert_config rows to AlertRule shape
+        return (data ?? []).map((row: any) => ({
+          id: row.id,
+          alert_type: row.alert_type ?? "fault_threshold",
+          title: row.title ?? "Alerte seuil de panne",
+          threshold_hours: row.threshold_hours ?? 4,
+          notification_interval_hours: row.notification_interval_hours ?? 1,
+          email_recipients: row.email_recipients ?? [],
+          is_active: row.is_active ?? false,
+          charge_station_type: row.charge_station_type ?? "any",
+          deploy_state: row.deploy_state ?? "any",
+          firmware_version: row.firmware_version ?? null,
+          chargepoint_vendor: row.chargepoint_vendor ?? null,
+          chargepoint_model: row.chargepoint_model ?? null,
+          chargepoint_location_id: row.chargepoint_location_id ?? null,
+          global_config: row.global_config ?? false,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        }));
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
+function useAlertHistory() {
+  return useQuery({
+    queryKey: ["alert-history"],
+    retry: false,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from("alert_history")
+          .select("*, stations(name, city)")
+          .order("sent_at", { ascending: false })
+          .limit(50);
+        if (error) return [];
+        return data ?? [];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
 // ── Helpers ────────────────────────────────────────────────
 
 function heartbeatFresh(dateStr: string | null): boolean {
   if (!dateStr) return false;
   const diffMs = Date.now() - new Date(dateStr).getTime();
-  return diffMs < 5 * 60 * 1000; // 5 minutes
+  return diffMs < 5 * 60 * 1000;
 }
 
 function computeEnergy(tx: OcppTransaction): string {
@@ -132,12 +241,748 @@ function computeEnergy(tx: OcppTransaction): string {
   return "--";
 }
 
-// ── Page component ─────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// ADD ALERT WIZARD (GFX-style 3-step: Setup → Configuration → Sharing)
+// ══════════════════════════════════════════════════════════════
 
-type MonitoringTab = "realtime" | "maintenance";
+type WizardStep = "setup" | "configuration" | "sharing";
+const WIZARD_STEPS: { key: WizardStep; label: string }[] = [
+  { key: "setup", label: "Setup" },
+  { key: "configuration", label: "Configuration" },
+  { key: "sharing", label: "Sharing" },
+];
+
+function AddAlertWizard({
+  onBack,
+  onSaved,
+  editingRule,
+}: {
+  onBack: () => void;
+  onSaved: () => void;
+  editingRule?: AlertRule | null;
+}) {
+  const queryClient = useQueryClient();
+  const [step, setStep] = useState<WizardStep>("setup");
+  const [saving, setSaving] = useState(false);
+
+  // Setup fields
+  const [alertType, setAlertType] = useState(editingRule?.alert_type ?? "");
+  const [title, setTitle] = useState(editingRule?.title ?? "");
+  const [notifInterval, setNotifInterval] = useState(
+    String(editingRule?.notification_interval_hours ?? 1)
+  );
+
+  // Configuration fields
+  const [threshold, setThreshold] = useState(
+    String(editingRule?.threshold_hours ?? 1000)
+  );
+  const [globalConfig, setGlobalConfig] = useState(editingRule?.global_config ?? false);
+  const [stationType, setStationType] = useState(editingRule?.charge_station_type ?? "any");
+  const [deployState, setDeployState] = useState(editingRule?.deploy_state ?? "any");
+  const [firmwareVersion, setFirmwareVersion] = useState(editingRule?.firmware_version ?? "");
+  const [cpVendor, setCpVendor] = useState(editingRule?.chargepoint_vendor ?? "");
+  const [cpModel, setCpModel] = useState(editingRule?.chargepoint_model ?? "");
+  const [cpLocationId, setCpLocationId] = useState(editingRule?.chargepoint_location_id ?? "");
+
+  // Sharing fields
+  const [emailRecipients, setEmailRecipients] = useState<string[]>(
+    editingRule?.email_recipients ?? []
+  );
+  const [emailInput, setEmailInput] = useState("");
+
+  const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.key === step);
+
+  const canContinue = () => {
+    if (step === "setup") return alertType !== "" && title.trim() !== "";
+    if (step === "configuration") return threshold.trim() !== "";
+    if (step === "sharing") return emailRecipients.length > 0;
+    return true;
+  };
+
+  const handleContinue = () => {
+    if (step === "setup") setStep("configuration");
+    else if (step === "configuration") setStep("sharing");
+    else handleSave();
+  };
+
+  const handleBack = () => {
+    if (step === "configuration") setStep("setup");
+    else if (step === "sharing") setStep("configuration");
+  };
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        alert_type: alertType,
+        title: title.trim(),
+        threshold_hours: parseFloat(threshold) || 4,
+        notification_interval_hours: parseFloat(notifInterval) || 1,
+        email_recipients: emailRecipients,
+        is_active: editingRule?.is_active ?? true,
+        charge_station_type: stationType,
+        deploy_state: deployState,
+        firmware_version: firmwareVersion || null,
+        chargepoint_vendor: cpVendor || null,
+        chargepoint_model: cpModel || null,
+        chargepoint_location_id: cpLocationId || null,
+        global_config: globalConfig,
+      };
+
+      if (editingRule) {
+        const { error } = await supabase
+          .from("alert_config")
+          .update(payload)
+          .eq("id", editingRule.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from("alert_config").insert(payload);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alert-rules"] });
+      onSaved();
+    },
+  });
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await saveMutation.mutateAsync();
+    } catch (err) {
+      console.error("Error saving alert:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addEmail = (email: string) => {
+    const trimmed = email.trim().toLowerCase();
+    if (trimmed && trimmed.includes("@") && !emailRecipients.includes(trimmed)) {
+      setEmailRecipients([...emailRecipients, trimmed]);
+    }
+    setEmailInput("");
+  };
+
+  const handleEmailKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addEmail(emailInput);
+    }
+  };
+
+  const removeEmail = (email: string) => {
+    setEmailRecipients(emailRecipients.filter((e) => e !== email));
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onBack}
+            className="p-2 rounded-xl border border-border text-foreground-muted hover:text-foreground hover:bg-surface-elevated transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <h1 className="font-heading text-xl font-bold">
+            {editingRule ? "Modifier l'alerte" : "Add alert"}
+          </h1>
+        </div>
+        <div className="flex items-center gap-3">
+          {currentStepIndex > 0 && (
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-1.5 px-4 py-2.5 border border-border rounded-xl text-sm font-medium text-foreground hover:bg-surface-elevated transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              Back
+            </button>
+          )}
+          <button
+            onClick={step === "sharing" ? handleSave : handleContinue}
+            disabled={!canContinue() || saving}
+            className={cn(
+              "flex items-center gap-1.5 px-5 py-2.5 rounded-xl text-sm font-semibold transition-colors",
+              canContinue() && !saving
+                ? "bg-primary text-white hover:bg-primary/90"
+                : "bg-primary/40 text-white/60 cursor-not-allowed"
+            )}
+          >
+            {saving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : step === "sharing" ? (
+              "Enregistrer"
+            ) : (
+              <>
+                Continue
+                <ArrowRight className="w-4 h-4" />
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Step tabs */}
+      <div className="flex items-center gap-0 border-b border-border">
+        {WIZARD_STEPS.map((ws, idx) => {
+          const isCurrent = ws.key === step;
+          const isPast = idx < currentStepIndex;
+          return (
+            <button
+              key={ws.key}
+              onClick={() => {
+                if (isPast) setStep(ws.key);
+              }}
+              className={cn(
+                "flex items-center gap-2 px-5 py-3 text-sm font-medium transition-colors relative",
+                isCurrent
+                  ? "text-primary"
+                  : isPast
+                  ? "text-foreground hover:text-primary cursor-pointer"
+                  : "text-foreground-muted cursor-default"
+              )}
+            >
+              {ws.label}
+              {idx < WIZARD_STEPS.length - 1 && (
+                <ChevronRight className="w-3.5 h-3.5 text-foreground-muted ml-2" />
+              )}
+              {isCurrent && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Step content */}
+      <div className="max-w-2xl">
+        {step === "setup" && (
+          <div className="space-y-6">
+            {/* Alert Type */}
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1.5">
+                Alert Type <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={alertType}
+                onChange={(e) => setAlertType(e.target.value)}
+                className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50"
+              >
+                <option value="">Select</option>
+                {ALERT_TYPES.map((at) => (
+                  <option key={at.value} value={at.value}>
+                    {at.label}
+                  </option>
+                ))}
+              </select>
+              {alertType && (
+                <p className="mt-1.5 text-xs text-foreground-muted">
+                  {ALERT_TYPES.find((a) => a.value === alertType)?.description}
+                </p>
+              )}
+            </div>
+
+            {/* Title */}
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1.5">
+                Title <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Nom de l'alerte"
+                className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+              />
+            </div>
+
+            {/* Notification interval */}
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1.5">
+                Notification interval
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={notifInterval}
+                  onChange={(e) => setNotifInterval(e.target.value)}
+                  min="1"
+                  className="w-24 px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50"
+                />
+                <span className="px-3 py-2 bg-primary/10 text-primary text-sm font-medium rounded-lg">
+                  hours
+                </span>
+              </div>
+              <p className="mt-1.5 text-xs text-foreground-muted">
+                AlertsTriggeredReceiveNotification
+              </p>
+            </div>
+          </div>
+        )}
+
+        {step === "configuration" && (
+          <div className="space-y-8">
+            {/* Configuration section */}
+            <div>
+              <h2 className="text-lg font-bold text-foreground border-b border-border pb-2 mb-4">
+                Configuration
+              </h2>
+
+              {/* Threshold */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-foreground mb-1.5">
+                  Threshold
+                </label>
+                <input
+                  type="number"
+                  value={threshold}
+                  onChange={(e) => setThreshold(e.target.value)}
+                  className="w-32 px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50"
+                />
+              </div>
+
+              {/* Global configuration toggle */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setGlobalConfig(!globalConfig)}
+                  className="text-foreground-muted hover:text-foreground transition-colors"
+                >
+                  {globalConfig ? (
+                    <ToggleRight className="w-10 h-6 text-primary" />
+                  ) : (
+                    <ToggleLeft className="w-10 h-6" />
+                  )}
+                </button>
+                <span className="text-sm text-foreground">Global configuration</span>
+                <Info className="w-4 h-4 text-foreground-muted" />
+              </div>
+            </div>
+
+            {/* Filters section */}
+            <div>
+              <h2 className="text-lg font-bold text-foreground border-b border-border pb-2 mb-4">
+                Filters
+              </h2>
+
+              {/* Charge Station Type */}
+              <div className="mb-5">
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  Charge Station Type
+                </label>
+                <div className="flex items-center gap-4">
+                  {["any", "business", "home", "public"].map((val) => (
+                    <label key={val} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="stationType"
+                        value={val}
+                        checked={stationType === val}
+                        onChange={(e) => setStationType(e.target.value)}
+                        className="w-4 h-4 text-primary border-border focus:ring-primary"
+                      />
+                      <span className="text-sm text-foreground capitalize">
+                        {val === "any" ? "Any" : val === "business" ? "Business" : val === "home" ? "Home" : "Public"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Deploy state */}
+              <div className="mb-5">
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  Deploy state
+                </label>
+                <div className="flex items-center gap-4">
+                  {["any", "production", "stock", "deprecated"].map((val) => (
+                    <label key={val} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="deployState"
+                        value={val}
+                        checked={deployState === val}
+                        onChange={(e) => setDeployState(e.target.value)}
+                        className="w-4 h-4 text-primary border-border focus:ring-primary"
+                      />
+                      <span className="text-sm text-foreground capitalize">
+                        {val === "any" ? "Any" : val === "production" ? "Production" : val === "stock" ? "Stock" : "Deprecated"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Firmware Version + Chargepoint vendor (2 columns) */}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Firmware Version
+                  </label>
+                  <input
+                    type="text"
+                    value={firmwareVersion}
+                    onChange={(e) => setFirmwareVersion(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Chargepoint vendor
+                  </label>
+                  <input
+                    type="text"
+                    value={cpVendor}
+                    onChange={(e) => setCpVendor(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+              </div>
+
+              {/* Chargepoint model + Chargepoint location ID (2 columns) */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Chargepoint model
+                  </label>
+                  <input
+                    type="text"
+                    value={cpModel}
+                    onChange={(e) => setCpModel(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-1.5">
+                    Chargepoint location ID
+                  </label>
+                  <input
+                    type="text"
+                    value={cpLocationId}
+                    onChange={(e) => setCpLocationId(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === "sharing" && (
+          <div className="space-y-6">
+            {/* Email recipients */}
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1.5">
+                Email recipients <span className="text-red-500">*</span>
+              </label>
+              <div className="flex flex-wrap items-center gap-1.5 px-3 py-2.5 bg-surface border border-border rounded-xl min-h-[44px] focus-within:border-primary/50">
+                {emailRecipients.map((email) => (
+                  <span
+                    key={email}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-elevated rounded-lg text-sm text-foreground"
+                  >
+                    {email}
+                    <button
+                      onClick={() => removeEmail(email)}
+                      className="text-foreground-muted hover:text-foreground transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                ))}
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => setEmailInput(e.target.value)}
+                  onKeyDown={handleEmailKeyDown}
+                  onBlur={() => {
+                    if (emailInput.trim()) addEmail(emailInput);
+                  }}
+                  placeholder={emailRecipients.length === 0 ? "email@example.com" : ""}
+                  className="flex-1 min-w-[200px] px-1 py-0.5 bg-transparent text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none"
+                />
+              </div>
+              <p className="mt-1.5 text-xs text-foreground-muted">
+                Add items by typing, then use comma or enter to separate
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// ALERT LIST VIEW
+// ══════════════════════════════════════════════════════════════
+
+function AlertsTab() {
+  const queryClient = useQueryClient();
+  const { data: alertRules, isLoading } = useAlertRules();
+  const { data: alertHistory } = useAlertHistory();
+  const [showWizard, setShowWizard] = useState(false);
+  const [editingRule, setEditingRule] = useState<AlertRule | null>(null);
+
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, is_active }: { id: string; is_active: boolean }) => {
+      const { error } = await supabase
+        .from("alert_config")
+        .update({ is_active })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alert-rules"] });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("alert_config").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["alert-rules"] });
+    },
+  });
+
+  if (showWizard || editingRule) {
+    return (
+      <AddAlertWizard
+        onBack={() => {
+          setShowWizard(false);
+          setEditingRule(null);
+        }}
+        onSaved={() => {
+          setShowWizard(false);
+          setEditingRule(null);
+        }}
+        editingRule={editingRule}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-heading text-base font-semibold text-foreground">
+            Alertes configurées
+          </h2>
+          <p className="text-xs text-foreground-muted mt-0.5">
+            Gérez vos règles d'alertes et notifications
+          </p>
+        </div>
+        <button
+          onClick={() => setShowWizard(true)}
+          className="flex items-center gap-1.5 px-4 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Add alert
+        </button>
+      </div>
+
+      {/* Alert rules table */}
+      <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border">
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Statut
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Titre
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Type
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Seuil
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Intervalle
+                </th>
+                <th className="text-left py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Destinataires
+                </th>
+                <th className="text-right py-3 px-4 text-xs font-semibold text-foreground-muted uppercase">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center">
+                    <Loader2 className="w-5 h-5 animate-spin mx-auto text-foreground-muted" />
+                  </td>
+                </tr>
+              ) : !alertRules || alertRules.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <Bell className="w-8 h-8 text-foreground-muted/40" />
+                      <p className="text-sm text-foreground-muted">
+                        Aucune alerte configurée
+                      </p>
+                      <button
+                        onClick={() => setShowWizard(true)}
+                        className="mt-2 text-sm text-primary hover:text-primary/80 font-medium"
+                      >
+                        Créer votre première alerte
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                alertRules.map((rule) => (
+                  <tr
+                    key={rule.id}
+                    className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() =>
+                          toggleMutation.mutate({ id: rule.id, is_active: !rule.is_active })
+                        }
+                        className="transition-colors"
+                      >
+                        {rule.is_active ? (
+                          <ToggleRight className="w-8 h-5 text-primary" />
+                        ) : (
+                          <ToggleLeft className="w-8 h-5 text-foreground-muted" />
+                        )}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 font-medium text-foreground">
+                      {rule.title}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs font-medium rounded-lg">
+                        {ALERT_TYPES.find((a) => a.value === rule.alert_type)?.label ?? rule.alert_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted">
+                      {rule.threshold_hours}h
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted">
+                      {rule.notification_interval_hours}h
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {rule.email_recipients.slice(0, 2).map((email) => (
+                          <span
+                            key={email}
+                            className="px-2 py-0.5 bg-surface-elevated rounded text-xs text-foreground-muted truncate max-w-[140px]"
+                          >
+                            {email}
+                          </span>
+                        ))}
+                        {rule.email_recipients.length > 2 && (
+                          <span className="px-1.5 py-0.5 text-xs text-foreground-muted">
+                            +{rule.email_recipients.length - 2}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => setEditingRule(rule)}
+                          className="p-1.5 text-foreground-muted hover:text-foreground rounded-lg hover:bg-surface-elevated transition-colors"
+                          title="Modifier"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (confirm("Supprimer cette alerte ?")) {
+                              deleteMutation.mutate(rule.id);
+                            }
+                          }}
+                          className="p-1.5 text-foreground-muted hover:text-red-500 rounded-lg hover:bg-surface-elevated transition-colors"
+                          title="Supprimer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Alert history */}
+      {alertHistory && alertHistory.length > 0 && (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+            <Clock className="w-4 h-4 text-foreground-muted" />
+            <h2 className="font-heading text-sm font-semibold">
+              Historique des alertes envoyées
+            </h2>
+            <span className="ml-auto text-xs text-foreground-muted">
+              {alertHistory.length} dernières
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-foreground-muted border-b border-border">
+                  <th className="text-left font-medium px-4 py-2.5">Borne</th>
+                  <th className="text-left font-medium px-4 py-2.5">Type</th>
+                  <th className="text-left font-medium px-4 py-2.5">Heures en panne</th>
+                  <th className="text-left font-medium px-4 py-2.5">Envoyé le</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {alertHistory.map((entry: any) => (
+                  <tr
+                    key={entry.id}
+                    className="hover:bg-surface-elevated/50 transition-colors"
+                  >
+                    <td className="px-4 py-3 font-medium text-foreground">
+                      {entry.stations?.name ?? entry.station_id?.slice(0, 8)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 bg-red-500/10 text-red-500 text-xs font-medium rounded-lg">
+                        {entry.alert_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted">
+                      {entry.hours_in_fault != null
+                        ? `${Number(entry.hours_in_fault).toFixed(1)}h`
+                        : "--"}
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted text-xs">
+                      {formatRelativeTime(entry.sent_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// MAIN MONITORING PAGE
+// ══════════════════════════════════════════════════════════════
+
+type MonitoringTab = "realtime" | "alerts" | "maintenance";
 
 const MONITORING_TABS: { key: MonitoringTab; label: string; icon: typeof Activity }[] = [
   { key: "realtime", label: "Temps réel", icon: Activity },
+  { key: "alerts", label: "Alertes", icon: Bell },
   { key: "maintenance", label: "Maintenance & Tickets", icon: Wrench },
 ];
 
@@ -217,6 +1062,22 @@ export function MonitoringPage() {
     </div>
   );
 
+  // ── Alerts tab ──
+  if (activeTab === "alerts") {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-heading text-xl font-bold">Monitoring</h1>
+          <p className="text-sm text-foreground-muted mt-1">
+            Surveillance en temps réel du réseau
+          </p>
+        </div>
+        {tabBar}
+        <AlertsTab />
+      </div>
+    );
+  }
+
   // ── Maintenance tab ──
   if (activeTab === "maintenance") {
     return (
@@ -224,7 +1085,7 @@ export function MonitoringPage() {
         <div>
           <h1 className="font-heading text-xl font-bold">Monitoring</h1>
           <p className="text-sm text-foreground-muted mt-1">
-            Surveillance en temps r&eacute;el du r&eacute;seau
+            Surveillance en temps réel du réseau
           </p>
         </div>
         {tabBar}
@@ -240,7 +1101,7 @@ export function MonitoringPage() {
         <div>
           <h1 className="font-heading text-xl font-bold">Monitoring</h1>
           <p className="text-sm text-foreground-muted mt-1">
-            Surveillance en temps r&eacute;el du r&eacute;seau
+            Surveillance en temps réel du réseau
           </p>
         </div>
         {tabBar}
@@ -261,12 +1122,12 @@ export function MonitoringPage() {
         <div>
           <h1 className="font-heading text-xl font-bold">Monitoring</h1>
           <p className="text-sm text-foreground-muted mt-1">
-            Surveillance en temps r&eacute;el du r&eacute;seau
+            Surveillance en temps réel du réseau
           </p>
         </div>
         {tabBar}
         <ErrorState
-          message="Impossible de charger les donn&eacute;es de monitoring"
+          message="Impossible de charger les données de monitoring"
           onRetry={() => refetchStations()}
         />
       </div>
@@ -279,7 +1140,7 @@ export function MonitoringPage() {
       <div>
         <h1 className="font-heading text-xl font-bold">Monitoring</h1>
         <p className="text-sm text-foreground-muted mt-1">
-          Surveillance en temps r&eacute;el du r&eacute;seau
+          Surveillance en temps réel du réseau
         </p>
       </div>
 
@@ -320,7 +1181,7 @@ export function MonitoringPage() {
           borderColor="border-status-charging/30"
         />
         <KPICard
-          label="Chargepoints connect&eacute;s"
+          label="Chargepoints connectés"
           value={kpis?.connectedCPs ?? 0}
           icon={Cpu}
           color="#3498DB"
@@ -435,15 +1296,9 @@ export function MonitoringPage() {
                 <thead>
                   <tr className="text-xs text-foreground-muted border-b border-border">
                     <th className="text-left font-medium px-4 py-2.5">Borne</th>
-                    <th className="text-left font-medium px-4 py-2.5">
-                      Connecteur
-                    </th>
-                    <th className="text-left font-medium px-4 py-2.5">
-                      D&eacute;but
-                    </th>
-                    <th className="text-right font-medium px-4 py-2.5">
-                      &Eacute;nergie
-                    </th>
+                    <th className="text-left font-medium px-4 py-2.5">Connecteur</th>
+                    <th className="text-left font-medium px-4 py-2.5">Début</th>
+                    <th className="text-right font-medium px-4 py-2.5">Énergie</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -499,7 +1354,7 @@ export function MonitoringPage() {
         {!chargepoints || chargepoints.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-40 text-foreground-muted">
             <Cpu className="w-8 h-8 mb-2 opacity-40" />
-            <p className="text-sm">Aucun chargepoint connect&eacute;</p>
+            <p className="text-sm">Aucun chargepoint connecté</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -507,15 +1362,9 @@ export function MonitoringPage() {
               <thead>
                 <tr className="text-xs text-foreground-muted border-b border-border">
                   <th className="text-left font-medium px-4 py-2.5">Identity</th>
-                  <th className="text-left font-medium px-4 py-2.5">
-                    Mod&egrave;le
-                  </th>
-                  <th className="text-left font-medium px-4 py-2.5">
-                    Firmware
-                  </th>
-                  <th className="text-left font-medium px-4 py-2.5">
-                    Dernier heartbeat
-                  </th>
+                  <th className="text-left font-medium px-4 py-2.5">Modèle</th>
+                  <th className="text-left font-medium px-4 py-2.5">Firmware</th>
+                  <th className="text-left font-medium px-4 py-2.5">Dernier heartbeat</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">

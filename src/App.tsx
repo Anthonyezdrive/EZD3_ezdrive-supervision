@@ -19,7 +19,7 @@ import { EnergyMixPage } from "@/components/energy-mix/EnergyMixPage";
 // ── CPO > Network ────────────────────────────────────────
 import { CpoOverviewPage } from "@/components/cpo-overview/CpoOverviewPage";
 import { CpoNetworksPage } from "@/components/cpo-networks/CpoNetworksPage";
-import { CpoContractsPage } from "@/components/cpo-contracts/CpoContractsPage";
+// CpoContracts fusionné dans CpoNetworksPage (onglet Contrats CPO → détail contrat)
 // ── CPO > Billing (fusionné) ─────────────────────────────
 import { BillingPage } from "@/components/billing/BillingPage";
 import { TariffsPage } from "@/components/tariffs/TariffsPage";
@@ -96,7 +96,7 @@ export default function App() {
 
                 {/* ── CPO > Network ── */}
                 <Route path="/cpo-networks" element={<CpoNetworksPage />} />
-                <Route path="/cpo-contracts" element={<CpoContractsPage />} />
+                <Route path="/cpo-contracts" element={<Navigate to="/cpo-networks" replace />} />
 
                 {/* ── CPO > Assets ── */}
                 <Route path="/stations" element={<StationsPage />} />
