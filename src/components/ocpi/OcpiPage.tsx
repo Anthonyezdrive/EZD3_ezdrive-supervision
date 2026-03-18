@@ -1,103 +1,727 @@
-import { useState } from "react";
+// ============================================================
+// EZDrive — OCPI Subscriptions Page (GFX-style)
+// List → Detail view with tabs (Détails, Parties relayées, Diagnostic)
+// ============================================================
+
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
-import { PageHelp } from "@/components/ui/PageHelp";
-import { KPICard } from "@/components/ui/KPICard";
-import { StatusBadge } from "@/components/ui/StatusBadge";
 import {
   Globe,
   Send,
   CheckCircle,
   XCircle,
-  Clock,
   RefreshCw,
-  Zap,
-  MapPin,
-  CreditCard,
-  Key,
-  ArrowRight,
-  Play,
-  FileText,
-  Activity,
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/Skeleton";
 
-// ============================================================
-// OCPI Dashboard — Gireve IOP Integration Status
-// ============================================================
+// ── Types ─────────────────────────────────────────────────────
+
+interface OcpiCredential {
+  id: string;
+  role: "CPO" | "EMSP";
+  country_code: string;
+  party_id: string;
+  token_a: string | null;
+  token_b: string | null;
+  token_c: string | null;
+  versions_url: string | null;
+  our_versions_url: string | null;
+  our_base_url: string | null;
+  status: "PENDING" | "CONNECTED" | "SUSPENDED" | "BLOCKED";
+  platform: "PREPROD" | "PROD";
+  gireve_country_code: string | null;
+  gireve_party_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface OcpiSubscription {
+  id: string;
+  name: string;
+  subscription_id: string;
+  party: string;
+  role: "CPO" | "eMSP";
+  other_party: string;
+  other_party_role: "CPO" | "eMSP";
+  protocol: string;
+  status: "CONNECTED" | "PENDING" | "SUSPENDED" | "BLOCKED";
+  // Detail fields
+  our_country_code: string;
+  our_party_id: string;
+  our_url: string;
+  our_token: string;
+  our_date: string;
+  our_version: string;
+  our_is_platform: boolean;
+  other_country_code: string;
+  other_party_id: string;
+  other_url: string;
+  other_token: string;
+  other_broadcast_name: string;
+  other_website: string;
+  // Modules
+  modules_own: string[];
+  modules_other: string[];
+}
+
+type SortKey = "subscription_id" | "name" | "party" | "role" | "other_party" | "other_party_role" | "protocol";
+type SortDir = "asc" | "desc";
+type DetailTab = "details" | "parties" | "diagnostic";
+
+const PAGE_SIZE = 25;
+
+// ── Helpers ───────────────────────────────────────────────────
+
+const OCPI_MODULES = ["cdrs", "commands", "credentials", "locations", "sessions", "tariffs", "tokens"];
+
+const CONFIG_OWN = [
+  { key: "unique_connector_id", label: "Rendre l'ID du connecteur unique", value: false },
+  { key: "rfid_capability", label: "Appliquer la capacité RFID", value: false },
+  { key: "session_id_for_cdr", label: "Utiliser l'ID de la session pour l'ID du CDR", value: false },
+  { key: "use_ocpi_2_1_id2", label: "UseOcpi2_1_ID2", value: false },
+  { key: "token_issuer_owner", label: "Propriétaire du token basé sur l'émetteur", value: false },
+  { key: "poi_expose_unpublished", label: "POI_EXPOSE_UNPUBLISHED_LOCATIONS", value: false },
+  { key: "poi_expose_blacklist", label: "POI_EXPOSE_BLACKLIST_LOCATIONS", value: false },
+  { key: "publish_all_cdrs", label: "PUBLISH_ALL_CDRS", value: false },
+];
+
+const CONFIG_OTHER = [
+  { key: "add_connected_emsps", label: "ADD_CONNECTED_EMSPS_TO_API_HEADER", value: "No" },
+  { key: "set_cdr_coupon", label: "SetCdrCouponInformation", value: "false" },
+  { key: "allow_custom_location", label: "AllowCustomLocationId", value: "false" },
+  { key: "pull_process_tokens", label: "PULL_AND_PROCESS_TOKENS", value: "true" },
+  { key: "use_base64_token", label: "USE_BASE_64_CREDENTIALS_TOKEN", value: "false" },
+  { key: "zero_parking_fee", label: "SET_TOTAL_PARKING_TIME_TO_ZERO_IF_NO_PARKING_FEE", value: "false" },
+];
+
+function maskToken(token: string | null): string {
+  if (!token) return "—";
+  if (token.length <= 8) return "****" + token.slice(-4);
+  return "*".repeat(Math.min(30, token.length - 4)) + token.slice(-4);
+}
+
+const formatDate = (d: string | null) =>
+  d ? new Date(d).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }) + " @ " + new Date(d).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+
+// ── Main Component ────────────────────────────────────────────
 
 export function OcpiPage() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<"overview" | "locations" | "sessions" | "cdrs" | "push-log" | "tokens">("overview");
 
-  // --- Data Hooks ---
-  const { data: credentials } = useQuery({
+  // Navigation
+  const [selectedSubscription, setSelectedSubscription] = useState<OcpiSubscription | null>(null);
+  const [detailTab, setDetailTab] = useState<DetailTab>("details");
+
+  // List state
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [page, setPage] = useState(1);
+  const [colFilters, setColFilters] = useState<Record<string, string>>({
+    subscription_id: "", name: "", party: "", role: "", other_party: "", other_party_role: "", protocol: "",
+  });
+
+  // ── Data ──
+  const { data: credentials, isLoading } = useQuery<OcpiCredential[]>({
     queryKey: ["ocpi-credentials"],
     queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_credentials")
-        .select("*")
-        .order("role");
+      const { data, error } = await supabase.from("ocpi_credentials").select("*").order("role");
+      if (error) return [];
+      return (data ?? []) as OcpiCredential[];
+    },
+  });
+
+  // Build subscriptions from credentials (our internal representation)
+  const subscriptions = useMemo<OcpiSubscription[]>(() => {
+    if (!credentials) return [];
+    return credentials.map((cred) => {
+      const isCpo = cred.role === "CPO";
+      return {
+        id: cred.id,
+        subscription_id: cred.id,
+        name: `[GFX-M-Roam] EZDrive ${cred.role} - ${cred.gireve_country_code}${cred.gireve_party_id}`,
+        party: "GreenFlux Netherlands",
+        role: cred.role as "CPO" | "eMSP",
+        other_party: `Gireve ${isCpo ? "eMSP" : "CPO"}`,
+        other_party_role: isCpo ? "eMSP" as const : "CPO" as const,
+        protocol: "OCPI 2.2.1",
+        status: cred.status,
+        our_country_code: `${cred.country_code}/${cred.party_id}`,
+        our_party_id: cred.party_id,
+        our_url: cred.our_versions_url ?? "—",
+        our_token: cred.token_a ?? "",
+        our_date: cred.created_at,
+        our_version: "2.1.1",
+        our_is_platform: false,
+        other_country_code: `${cred.gireve_country_code ?? "FR"}/${cred.gireve_party_id ?? "107"}`,
+        other_party_id: cred.gireve_party_id ?? "107",
+        other_url: cred.versions_url ?? "—",
+        other_token: cred.token_b ?? "",
+        other_broadcast_name: isCpo ? "Gireve" : "Gireve",
+        other_website: "—",
+        modules_own: OCPI_MODULES,
+        modules_other: OCPI_MODULES,
+      };
+    });
+  }, [credentials]);
+
+  // ── CPO parties for "Parties relayées" tab ──
+  const { data: cpoParties } = useQuery({
+    queryKey: ["ocpi-cpo-parties"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("cpos").select("id, name, external_id, country_code, gfx_id").order("name");
+      if (error) return [];
       return data ?? [];
     },
+    enabled: !!selectedSubscription,
   });
 
-  const { data: locationCount } = useQuery({
-    queryKey: ["ocpi-location-count"],
-    queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_locations")
-        .select("*", { count: "exact", head: true });
-      return count ?? 0;
+  // ── Mutations (keep operational buttons) ──
+  const seedMutation = useMutation({
+    mutationFn: async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ocpi-seed-locations`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session?.access_token}`, "Content-Type": "application/json" },
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-credentials"] });
     },
   });
 
-  const { data: evseCount } = useQuery({
-    queryKey: ["ocpi-evse-count"],
-    queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_evses")
-        .select("*", { count: "exact", head: true });
-      return count ?? 0;
+  const pushMutation = useMutation({
+    mutationFn: async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ocpi-push`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${session?.access_token}`, "Content-Type": "application/json" },
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-credentials"] });
     },
   });
 
-  const { data: sessionCount } = useQuery({
-    queryKey: ["ocpi-session-count"],
-    queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_sessions")
-        .select("*", { count: "exact", head: true });
-      return count ?? 0;
-    },
-  });
+  // ── Sorting ──
+  function handleSort(key: SortKey) {
+    if (sortKey === key) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("asc"); }
+    setPage(1);
+  }
 
-  const { data: cdrCount } = useQuery({
-    queryKey: ["ocpi-cdr-count"],
-    queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_cdrs")
-        .select("*", { count: "exact", head: true });
-      return count ?? 0;
-    },
-  });
+  // ── Filter + Sort ──
+  const processed = useMemo(() => {
+    let list = subscriptions;
 
-  const { data: tokenCount } = useQuery({
-    queryKey: ["ocpi-token-count"],
+    // Column filters
+    Object.entries(colFilters).forEach(([key, val]) => {
+      if (!val) return;
+      const q = val.toLowerCase();
+      list = list.filter((s) => {
+        const v = s[key as keyof OcpiSubscription];
+        return typeof v === "string" && v.toLowerCase().includes(q);
+      });
+    });
+
+    // Sort
+    return [...list].sort((a, b) => {
+      const av = a[sortKey] as string; const bv = b[sortKey] as string;
+      if (!av && !bv) return 0; if (!av) return 1; if (!bv) return -1;
+      const cmp = av.localeCompare(bv, "fr");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [subscriptions, colFilters, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(processed.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const paginated = processed.slice(start, start + PAGE_SIZE);
+
+  const thClass = "px-3 py-2.5 text-left text-[11px] font-semibold text-foreground-muted uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors select-none whitespace-nowrap";
+  const filterInputClass = "w-full px-2 py-1.5 bg-surface-elevated border border-border rounded text-xs text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
+
+  const SortIcon = ({ col }: { col: SortKey }) => {
+    if (col !== sortKey) return <span className="inline-flex ml-0.5 opacity-30"><ChevronUp className="w-3 h-3" /></span>;
+    return sortDir === "asc" ? <ChevronUp className="w-3 h-3 inline ml-0.5 text-primary" /> : <ChevronDown className="w-3 h-3 inline ml-0.5 text-primary" />;
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // DETAIL VIEW
+  // ════════════════════════════════════════════════════════════
+  if (selectedSubscription) {
+    const sub = selectedSubscription;
+
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <button onClick={() => { setSelectedSubscription(null); setDetailTab("details"); }} className="mt-1 p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h1 className="font-heading text-xl font-bold text-foreground flex items-center gap-2">
+                <Globe className="w-5 h-5 text-primary" />
+                {sub.name}
+              </h1>
+              <p className="text-sm text-foreground-muted mt-0.5 font-mono">{sub.subscription_id}</p>
+            </div>
+          </div>
+          {/* Status badge */}
+          <span className={cn(
+            "px-3 py-1.5 rounded-lg text-xs font-semibold",
+            sub.status === "CONNECTED" ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25" :
+            sub.status === "PENDING" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" :
+            "bg-red-500/15 text-red-400 border border-red-500/25"
+          )}>
+            {sub.status === "CONNECTED" ? "Actif" : sub.status}
+          </span>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 border-b border-border">
+          {([
+            { key: "details" as DetailTab, label: "Détails" },
+            { key: "parties" as DetailTab, label: "Parties relayées" },
+            { key: "diagnostic" as DetailTab, label: "Diagnostic" },
+          ]).map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setDetailTab(tab.key)}
+              className={cn(
+                "px-4 py-2.5 text-sm font-medium transition-colors relative",
+                detailTab === tab.key ? "text-primary" : "text-foreground-muted hover:text-foreground"
+              )}
+            >
+              {tab.label}
+              {detailTab === tab.key && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />}
+            </button>
+          ))}
+        </div>
+
+        {/* Detail tab content */}
+        {detailTab === "details" && (
+          <div className="space-y-6">
+            {/* Détails section */}
+            <div className="bg-surface border border-border rounded-2xl p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-6">Détails</h2>
+              <div className="grid grid-cols-2 gap-8">
+                {/* Votre partie */}
+                <div>
+                  <h3 className="text-base font-semibold text-foreground mb-4">Votre partie</h3>
+                  <div className="space-y-3">
+                    <DetailField label="Partie impliquée" value={sub.our_country_code} />
+                    <DetailField label="Date d'enregistrement" value={formatDate(sub.our_date)} />
+                    <DetailField label="Identifiant abonnement" value={sub.subscription_id} mono />
+                    <DetailField label="Version OCPI" value={sub.our_version} />
+                    <DetailField label="Est un abonnement à la plate-forme">
+                      <XCircle className="w-4 h-4 text-red-400" />
+                    </DetailField>
+                    <DetailField label="Rôle" value={sub.role} />
+                    <DetailField label="Partie" value={`${sub.party} (GreenFlux)`} />
+                    <DetailField label="URL d'abonnement" value={sub.our_url} mono />
+                    <DetailField label="Token crypté" value={maskToken(sub.our_token)} mono />
+                  </div>
+                </div>
+
+                {/* Autre partie */}
+                <div>
+                  <h3 className="text-base font-semibold text-foreground mb-4">Autre partie</h3>
+                  <div className="space-y-3">
+                    <DetailField label="Partie impliquée" value={sub.other_country_code} />
+                    <DetailField label="Partie" value={sub.other_party} />
+                    <DetailField label="Rôle" value={sub.other_party_role} />
+                    <DetailField label="URL d'abonnement" value={sub.other_url} mono />
+                    <DetailField label="Token crypté" value={maskToken(sub.other_token)} mono />
+                    <DetailField label="Nom de diffusion" value={sub.other_broadcast_name} />
+                    <DetailField label="URL du site Internet de l'OCPI" value={sub.other_website} />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modules section */}
+            <div className="bg-surface border border-border rounded-2xl p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-6">Modules</h2>
+              <div className="grid grid-cols-2 gap-8">
+                {/* Votre partie modules */}
+                <div>
+                  <h3 className="text-base font-semibold text-foreground mb-4">Votre partie</h3>
+                  <div className="space-y-2">
+                    {OCPI_MODULES.map((mod) => (
+                      <div key={mod} className="flex items-center justify-between py-1.5">
+                        <span className="text-sm text-foreground flex items-center gap-1">
+                          {mod}
+                          <span className="text-foreground-muted text-xs cursor-help" title={`Module OCPI ${mod}`}>&#9432;</span>
+                        </span>
+                        {sub.modules_own.includes(mod) ? (
+                          <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-red-400" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Autre partie modules */}
+                <div>
+                  <h3 className="text-base font-semibold text-foreground mb-4">Autre partie</h3>
+                  <div className="space-y-2">
+                    {OCPI_MODULES.map((mod) => (
+                      <div key={mod} className="flex items-center justify-between py-1.5">
+                        <span className="text-sm text-foreground flex items-center gap-1">
+                          {mod}
+                          <span className="text-foreground-muted text-xs cursor-help" title={`Module OCPI ${mod}`}>&#9432;</span>
+                        </span>
+                        {sub.modules_other.includes(mod) ? (
+                          <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <XCircle className="w-4 h-4 text-red-400" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Configuration section */}
+            <div className="bg-surface border border-border rounded-2xl p-6">
+              <h2 className="text-lg font-semibold text-foreground mb-6">Configuration</h2>
+              <div className="grid grid-cols-2 gap-8">
+                {/* Own config */}
+                <div className="space-y-2">
+                  {CONFIG_OWN.map((cfg) => (
+                    <div key={cfg.key} className="flex items-center justify-between py-1.5">
+                      <span className="text-sm text-foreground flex items-center gap-1">
+                        {cfg.label}
+                        <span className="text-foreground-muted text-xs cursor-help" title={cfg.label}>&#9432;</span>
+                      </span>
+                      <XCircle className="w-4 h-4 text-red-400" />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Other config */}
+                <div className="space-y-2">
+                  {CONFIG_OTHER.map((cfg) => (
+                    <div key={cfg.key} className="flex items-center justify-between py-1.5">
+                      <span className="text-sm text-foreground flex items-center gap-1">
+                        {cfg.label}
+                        <span className="text-foreground-muted text-xs cursor-help" title={cfg.label}>&#9432;</span>
+                      </span>
+                      <span className="text-sm text-foreground-muted font-mono">{cfg.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Operational buttons */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => seedMutation.mutate()}
+                disabled={seedMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2.5 bg-surface-elevated hover:bg-surface border border-border rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={cn("w-4 h-4", seedMutation.isPending && "animate-spin")} />
+                {seedMutation.isPending ? "Seeding..." : "Seed Locations"}
+              </button>
+              <button
+                onClick={() => pushMutation.mutate()}
+                disabled={pushMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white hover:bg-primary/90 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                <Send className={cn("w-4 h-4", pushMutation.isPending && "animate-spin")} />
+                {pushMutation.isPending ? "Pushing..." : "Push to Gireve"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Parties relayées tab */}
+        {detailTab === "parties" && (
+          <div className="space-y-4">
+            <CollapsibleSection title={`Autorisations de publication de CPO (${(cpoParties ?? []).length})`} defaultOpen>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className={thClass}>Nom</th>
+                      <th className={thClass}>Identifiant externe</th>
+                      <th className={thClass}>Contrat CPO</th>
+                      <th className={thClass}>Code pays</th>
+                      <th className={thClass}>Identifiant de groupe</th>
+                      <th className={thClass}>Réseau CPO</th>
+                    </tr>
+                    {/* Filter row */}
+                    <tr className="border-b border-border bg-surface-elevated/30">
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                      <td className="px-3 py-2"><input placeholder="Recherche..." className={filterInputClass} /></td>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {(cpoParties ?? []).map((cpo: Record<string, unknown>) => (
+                      <tr key={cpo.id as string} className="hover:bg-surface-elevated/50 transition-colors">
+                        <td className="px-3 py-2.5 text-sm text-foreground font-medium">{cpo.name as string}</td>
+                        <td className="px-3 py-2.5 text-sm text-foreground-muted font-mono">{(cpo.external_id as string) ?? "—"}</td>
+                        <td className="px-3 py-2.5 text-sm text-foreground-muted">{cpo.gfx_id ? `GFX ${cpo.country_code} GFX` : "—"}</td>
+                        <td className="px-3 py-2.5 text-sm text-foreground-muted">{(cpo.country_code as string) ?? "FR"}</td>
+                        <td className="px-3 py-2.5 text-sm text-foreground-muted">GFX</td>
+                        <td className="px-3 py-2.5 text-sm text-foreground-muted">GreenFlux CPO Network</td>
+                      </tr>
+                    ))}
+                    {(cpoParties ?? []).length === 0 && (
+                      <tr><td colSpan={6} className="px-4 py-8 text-center text-foreground-muted text-sm">Aucune partie relayée</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CollapsibleSection>
+          </div>
+        )}
+
+        {/* Diagnostic tab */}
+        {detailTab === "diagnostic" && (
+          <DiagnosticTab subscriptionId={sub.id} />
+        )}
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // LIST VIEW
+  // ════════════════════════════════════════════════════════════
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <h1 className="font-heading text-xl font-bold text-foreground flex items-center gap-2">
+          <Globe className="w-5 h-5 text-primary" />
+          Abonnements OCPI
+        </h1>
+      </div>
+
+      {/* Tab */}
+      <div className="flex gap-1 border-b border-border">
+        <button className="px-4 py-2.5 text-sm font-medium text-primary relative">
+          Normal
+          <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
+        </button>
+      </div>
+
+      {/* Table */}
+      {isLoading ? (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden divide-y divide-border">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="px-4 py-3.5 flex items-center gap-6">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-48" />
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+          ))}
+        </div>
+      ) : processed.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48 bg-surface border border-border rounded-2xl">
+          <Globe className="w-10 h-10 text-foreground-muted mb-3" />
+          <p className="text-foreground font-medium">Aucun abonnement OCPI</p>
+          <p className="text-sm text-foreground-muted mt-1">Configurez vos credentials OCPI pour commencer.</p>
+        </div>
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                {/* Column headers */}
+                <tr className="border-b border-border">
+                  <th className={thClass} onClick={() => handleSort("subscription_id")}>
+                    Identifiant abonnement <SortIcon col="subscription_id" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("name")}>
+                    Nom <SortIcon col="name" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("party")}>
+                    Partie <SortIcon col="party" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("role")}>
+                    Rôle <SortIcon col="role" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("other_party")}>
+                    Autre partie <SortIcon col="other_party" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("other_party_role")}>
+                    Autre partie rôle <SortIcon col="other_party_role" />
+                  </th>
+                  <th className={thClass} onClick={() => handleSort("protocol")}>
+                    Protocole <SortIcon col="protocol" />
+                  </th>
+                </tr>
+                {/* Column filter inputs */}
+                <tr className="border-b border-border bg-surface-elevated/30">
+                  <td className="px-3 py-2">
+                    <input placeholder="Recherche..." value={colFilters.subscription_id} onChange={(e) => { setColFilters((f) => ({ ...f, subscription_id: e.target.value })); setPage(1); }} className={filterInputClass} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <input placeholder="Recherche..." value={colFilters.name} onChange={(e) => { setColFilters((f) => ({ ...f, name: e.target.value })); setPage(1); }} className={filterInputClass} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <input placeholder="Recherche..." value={colFilters.party} onChange={(e) => { setColFilters((f) => ({ ...f, party: e.target.value })); setPage(1); }} className={filterInputClass} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <select value={colFilters.role} onChange={(e) => { setColFilters((f) => ({ ...f, role: e.target.value })); setPage(1); }} className={filterInputClass}>
+                      <option value="">Filtrer...</option>
+                      <option value="CPO">CPO</option>
+                      <option value="eMSP">eMSP</option>
+                    </select>
+                  </td>
+                  <td className="px-3 py-2">
+                    <input placeholder="Recherche..." value={colFilters.other_party} onChange={(e) => { setColFilters((f) => ({ ...f, other_party: e.target.value })); setPage(1); }} className={filterInputClass} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <select value={colFilters.other_party_role} onChange={(e) => { setColFilters((f) => ({ ...f, other_party_role: e.target.value })); setPage(1); }} className={filterInputClass}>
+                      <option value="">Filtrer...</option>
+                      <option value="CPO">CPO</option>
+                      <option value="eMSP">eMSP</option>
+                    </select>
+                  </td>
+                  <td className="px-3 py-2">
+                    <select value={colFilters.protocol} onChange={(e) => { setColFilters((f) => ({ ...f, protocol: e.target.value })); setPage(1); }} className={filterInputClass}>
+                      <option value="">Filtrer...</option>
+                      <option value="OCPI 2.1.1">OCPI 2.1.1</option>
+                      <option value="OCPI 2.2.1">OCPI 2.2.1</option>
+                    </select>
+                  </td>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {paginated.map((sub) => (
+                  <tr
+                    key={sub.id}
+                    onClick={() => setSelectedSubscription(sub)}
+                    className="hover:bg-surface-elevated/50 transition-colors cursor-pointer"
+                  >
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted font-mono truncate max-w-[200px]">
+                      {sub.subscription_id.slice(0, 28)}...
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground truncate max-w-[260px]">
+                      {sub.name}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted">
+                      {sub.party}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted">
+                      {sub.role}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted truncate max-w-[200px]">
+                      {sub.other_party}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted">
+                      {sub.other_party_role}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-foreground-muted">
+                      {sub.protocol}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between px-4 py-3 border-t border-border">
+            <span className="text-xs text-foreground-muted">
+              retrieved on {new Date().toLocaleDateString("fr-FR")} @ {new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            </span>
+            <div className="flex items-center gap-4">
+              {totalPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={safePage === 1} className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground disabled:opacity-30 transition-colors">
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <span className="text-xs text-foreground-muted px-2">{safePage} / {totalPages}</span>
+                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={safePage === totalPages} className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground disabled:opacity-30 transition-colors">
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+              <span className="text-xs text-foreground-muted">
+                montrer {processed.length} enregistrements
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────
+
+function DetailField({ label, value, mono, children }: { label: string; value?: string; mono?: boolean; children?: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-1">
+      <span className="text-sm text-foreground-muted shrink-0">{label}</span>
+      {children ? (
+        <span className="text-sm text-foreground text-right">{children}</span>
+      ) : (
+        <span className={cn("text-sm text-foreground text-right truncate max-w-[300px]", mono && "font-mono text-xs")}>{value ?? "—"}</span>
+      )}
+    </div>
+  );
+}
+
+function CollapsibleSection({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-surface-elevated/50 transition-colors"
+      >
+        <h2 className="text-base font-semibold text-foreground">{title}</h2>
+        {open ? <ChevronDown className="w-4 h-4 text-foreground-muted" /> : <ChevronRight className="w-4 h-4 text-foreground-muted" />}
+      </button>
+      {open && <div className="border-t border-border">{children}</div>}
+    </div>
+  );
+}
+
+function DiagnosticTab({ subscriptionId }: { subscriptionId: string }) {
+  const { data: recentLogs, isLoading } = useQuery({
+    queryKey: ["ocpi-push-logs", subscriptionId],
     queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_tokens")
-        .select("*", { count: "exact", head: true });
-      return count ?? 0;
+      const { data } = await supabase
+        .from("ocpi_push_log")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(30);
+      return data ?? [];
     },
+    refetchInterval: 15000,
   });
 
   const { data: pushQueuePending } = useQuery({
     queryKey: ["ocpi-push-pending"],
     queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_push_queue")
-        .select("*", { count: "exact", head: true })
-        .in("status", ["PENDING", "RETRY"]);
+      const { count } = await supabase.from("ocpi_push_queue").select("*", { count: "exact", head: true }).in("status", ["PENDING", "RETRY"]);
       return count ?? 0;
     },
     refetchInterval: 10000,
@@ -106,617 +730,100 @@ export function OcpiPage() {
   const { data: pushQueueFailed } = useQuery({
     queryKey: ["ocpi-push-failed"],
     queryFn: async () => {
-      const { count } = await supabase
-        .from("ocpi_push_queue")
-        .select("*", { count: "exact", head: true })
-        .eq("status", "FAILED");
+      const { count } = await supabase.from("ocpi_push_queue").select("*", { count: "exact", head: true }).eq("status", "FAILED");
       return count ?? 0;
     },
   });
 
-  const { data: recentPushLogs } = useQuery({
-    queryKey: ["ocpi-push-logs"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_push_log")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(20);
-      return data ?? [];
-    },
-    refetchInterval: 15000,
-  });
-
-  const { data: locations } = useQuery({
-    queryKey: ["ocpi-locations"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_locations")
-        .select("*, ocpi_evses(*, ocpi_connectors(*))")
-        .order("name")
-        .limit(50);
-      return data ?? [];
-    },
-    enabled: activeTab === "locations",
-  });
-
-  const { data: sessions } = useQuery({
-    queryKey: ["ocpi-sessions"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_sessions")
-        .select("*")
-        .order("start_date_time", { ascending: false })
-        .limit(50);
-      return data ?? [];
-    },
-    enabled: activeTab === "sessions",
-  });
-
-  const { data: cdrs } = useQuery({
-    queryKey: ["ocpi-cdrs"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_cdrs")
-        .select("*")
-        .order("start_date_time", { ascending: false })
-        .limit(50);
-      return data ?? [];
-    },
-    enabled: activeTab === "cdrs",
-  });
-
-  const { data: tokens } = useQuery({
-    queryKey: ["ocpi-tokens-list"],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_tokens")
-        .select("*")
-        .order("last_updated", { ascending: false })
-        .limit(50);
-      return data ?? [];
-    },
-    enabled: activeTab === "tokens",
-  });
-
-  // --- Mutations ---
-  const seedMutation = useMutation({
-    mutationFn: async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ocpi-seed-locations`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session?.access_token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["ocpi-location-count"] });
-      queryClient.invalidateQueries({ queryKey: ["ocpi-evse-count"] });
-      queryClient.invalidateQueries({ queryKey: ["ocpi-locations"] });
-    },
-  });
-
-  const pushMutation = useMutation({
-    mutationFn: async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ocpi-push`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session?.access_token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["ocpi-push-pending"] });
-      queryClient.invalidateQueries({ queryKey: ["ocpi-push-failed"] });
-      queryClient.invalidateQueries({ queryKey: ["ocpi-push-logs"] });
-    },
-  });
-
-  // --- Tabs ---
-  const tabs = [
-    { id: "overview" as const, label: "Vue d'ensemble", icon: Activity },
-    { id: "locations" as const, label: "Locations", icon: MapPin },
-    { id: "sessions" as const, label: "Sessions", icon: Zap },
-    { id: "cdrs" as const, label: "CDRs", icon: FileText },
-    { id: "tokens" as const, label: "Tokens", icon: Key },
-    { id: "push-log" as const, label: "Push Log", icon: Send },
-  ];
-
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-heading font-bold text-foreground flex items-center gap-2">
-            <Globe className="w-6 h-6 text-primary" />
-            OCPI 2.2.1 — Gireve IOP
-          </h1>
-          <p className="text-sm text-foreground-muted mt-1">
-            Interface d'interopérabilité EZDrive CPO + eMSP
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => seedMutation.mutate()}
-            disabled={seedMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-surface-elevated hover:bg-surface border border-border rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${seedMutation.isPending ? "animate-spin" : ""}`} />
-            {seedMutation.isPending ? "Seeding..." : "Seed Locations"}
-          </button>
-          <button
-            onClick={() => pushMutation.mutate()}
-            disabled={pushMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 bg-primary text-white hover:bg-primary/90 rounded-xl text-sm font-medium transition-colors disabled:opacity-50"
-          >
-            <Send className={`w-4 h-4 ${pushMutation.isPending ? "animate-spin" : ""}`} />
-            {pushMutation.isPending ? "Pushing..." : "Push to Gireve"}
-          </button>
-        </div>
-      </div>
-
-      <PageHelp
-        summary="Gestion du protocole OCPI pour le roaming et l'interopérabilité entre réseaux"
-        items={[
-          { label: "OCPI", description: "Open Charge Point Interface — protocole standard pour l'échange de données entre opérateurs de recharge." },
-          { label: "Credentials", description: "Clés d'authentification échangées entre votre plateforme et les opérateurs partenaires." },
-          { label: "Endpoints", description: "URLs exposées pour que les partenaires puissent consulter vos bornes, tarifs et sessions." },
-          { label: "CDRs", description: "Charge Detail Records — relevés détaillés de chaque session, échangés entre opérateurs pour la facturation." },
-        ]}
-        tips={["Le roaming permet aux conducteurs d'autres réseaux de charger sur vos bornes, et vice versa."]}
-      />
-
-      {/* Connection Status */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {(credentials ?? []).map((cred: Record<string, unknown>) => (
-          <div
-            key={cred.id as string}
-            className="bg-surface border border-border rounded-2xl p-4"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                    cred.status === "CONNECTED"
-                      ? "bg-green-500/15 text-green-500"
-                      : "bg-amber-500/15 text-amber-500"
-                  }`}
-                >
-                  {cred.role === "CPO" ? (
-                    <Zap className="w-5 h-5" />
-                  ) : (
-                    <CreditCard className="w-5 h-5" />
-                  )}
-                </div>
-                <div>
-                  <p className="font-semibold text-foreground text-sm">
-                    {cred.role as string} — {cred.country_code as string}{cred.party_id as string}
-                  </p>
-                  <p className="text-xs text-foreground-muted">
-                    {cred.platform as string} → {cred.gireve_country_code as string}{cred.gireve_party_id as string}
-                  </p>
-                </div>
-              </div>
-              <span
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
-                  cred.status === "CONNECTED"
-                    ? "bg-green-500/15 text-green-500"
-                    : cred.status === "PENDING"
-                    ? "bg-amber-500/15 text-amber-500"
-                    : "bg-red-500/15 text-red-500"
-                }`}
-              >
-                {cred.status as string}
-              </span>
-            </div>
-            {cred.token_b && (
-              <p className="mt-2 text-[10px] text-foreground-muted font-mono truncate">
-                Token B: {(cred.token_b as string).substring(0, 20)}...
-              </p>
-            )}
+      {/* Push Queue Status */}
+      <div className="bg-surface border border-border rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-foreground mb-4">File d'attente Push</h2>
+        <div className="grid grid-cols-3 gap-4">
+          <div className="bg-surface-elevated rounded-xl p-4 text-center">
+            <p className="text-2xl font-bold text-foreground">{pushQueuePending ?? 0}</p>
+            <p className="text-xs text-foreground-muted mt-1">En attente</p>
           </div>
-        ))}
+          <div className="bg-surface-elevated rounded-xl p-4 text-center">
+            <p className="text-2xl font-bold text-red-400">{pushQueueFailed ?? 0}</p>
+            <p className="text-xs text-foreground-muted mt-1">Échoués</p>
+          </div>
+          <div className="bg-surface-elevated rounded-xl p-4 text-center">
+            <p className="text-2xl font-bold text-emerald-400">{(recentLogs ?? []).filter((l: Record<string, unknown>) => (l.response_status as number) >= 200 && (l.response_status as number) < 300).length}</p>
+            <p className="text-xs text-foreground-muted mt-1">Succès récents</p>
+          </div>
+        </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KPICard label="Locations" value={locationCount ?? 0} icon={MapPin} color="primary" />
-        <KPICard label="EVSEs" value={evseCount ?? 0} icon={Zap} color="primary" />
-        <KPICard label="Sessions" value={sessionCount ?? 0} icon={Activity} color="primary" />
-        <KPICard label="CDRs" value={cdrCount ?? 0} icon={FileText} color="primary" />
-        <KPICard label="Tokens" value={tokenCount ?? 0} icon={Key} color="primary" />
-        <KPICard
-          label="Push Queue"
-          value={pushQueuePending ?? 0}
-          icon={Send}
-          color={(pushQueueFailed ?? 0) > 0 ? "danger" : "primary"}
-        />
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-border overflow-x-auto">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-              activeTab === tab.id
-                ? "border-primary text-primary"
-                : "border-transparent text-foreground-muted hover:text-foreground"
-            }`}
-          >
-            <tab.icon className="w-4 h-4" />
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab Content */}
-      {activeTab === "overview" && (
-        <OverviewTab
-          credentials={credentials ?? []}
-          recentLogs={recentPushLogs ?? []}
-          seedResult={seedMutation.data}
-          pushResult={pushMutation.data}
-        />
-      )}
-      {activeTab === "locations" && <LocationsTab locations={locations ?? []} />}
-      {activeTab === "sessions" && <SessionsTab sessions={sessions ?? []} />}
-      {activeTab === "cdrs" && <CdrsTab cdrs={cdrs ?? []} />}
-      {activeTab === "tokens" && <TokensTab tokens={tokens ?? []} />}
-      {activeTab === "push-log" && <PushLogTab logs={recentPushLogs ?? []} />}
-    </div>
-  );
-}
-
-// ============================================================
-// Tab Components
-// ============================================================
-
-function OverviewTab({ credentials, recentLogs, seedResult, pushResult }: {
-  credentials: Record<string, unknown>[];
-  recentLogs: Record<string, unknown>[];
-  seedResult?: Record<string, unknown>;
-  pushResult?: Record<string, unknown>;
-}) {
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {/* OCPI Endpoints */}
-      <div className="bg-surface border border-border rounded-2xl p-5">
-        <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
-          <Globe className="w-4 h-4 text-primary" />
-          Endpoints OCPI exposés
-        </h3>
-        <div className="space-y-2 text-xs font-mono">
+      {/* Endpoints */}
+      <div className="bg-surface border border-border rounded-2xl p-6">
+        <h2 className="text-lg font-semibold text-foreground mb-4">Endpoints OCPI exposés</h2>
+        <div className="space-y-1.5 text-xs font-mono">
           {[
-            "GET  /versions",
-            "GET  /2.2.1",
-            "POST /2.2.1/credentials",
-            "GET  /2.2.1/locations",
-            "GET  /2.2.1/tariffs",
-            "GET  /2.2.1/sessions",
-            "GET  /2.2.1/cdrs",
-            "GET  /2.2.1/tokens",
+            "GET  /versions", "GET  /2.2.1", "POST /2.2.1/credentials",
+            "GET  /2.2.1/locations", "GET  /2.2.1/tariffs", "GET  /2.2.1/sessions",
+            "GET  /2.2.1/cdrs", "GET  /2.2.1/tokens",
             "POST /2.2.1/tokens/{uid}/authorize",
-            "POST /2.2.1/commands/START_SESSION",
-            "POST /2.2.1/commands/STOP_SESSION",
+            "POST /2.2.1/commands/START_SESSION", "POST /2.2.1/commands/STOP_SESSION",
           ].map((ep) => (
-            <div key={ep} className="flex items-center gap-2 text-foreground-muted">
-              <CheckCircle className="w-3 h-3 text-green-500 shrink-0" />
+            <div key={ep} className="flex items-center gap-2 text-foreground-muted py-0.5">
+              <CheckCircle className="w-3 h-3 text-emerald-400 shrink-0" />
               <span>{ep}</span>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Recent Actions */}
-      <div className="bg-surface border border-border rounded-2xl p-5">
-        <h3 className="font-semibold text-foreground mb-3 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-primary" />
-          Derniers logs OCPI
-        </h3>
-        <div className="space-y-2 max-h-80 overflow-y-auto">
-          {recentLogs.length === 0 ? (
-            <p className="text-sm text-foreground-muted">Aucun log OCPI</p>
-          ) : (
-            recentLogs.slice(0, 10).map((log: Record<string, unknown>) => (
-              <div
-                key={log.id as string}
-                className="flex items-center justify-between text-xs py-1.5 border-b border-border last:border-0"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  {(log.response_status as number) >= 200 && (log.response_status as number) < 300 ? (
-                    <CheckCircle className="w-3 h-3 text-green-500 shrink-0" />
-                  ) : (
-                    <XCircle className="w-3 h-3 text-red-500 shrink-0" />
-                  )}
-                  <span className="font-mono text-foreground-muted truncate">
-                    {log.action as string} {log.ocpi_path as string}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 ml-2">
-                  <span className="text-foreground-muted">{log.duration_ms as number}ms</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                      (log.response_status as number) >= 200 && (log.response_status as number) < 300
-                        ? "bg-green-500/15 text-green-500"
-                        : "bg-red-500/15 text-red-500"
-                    }`}
-                  >
-                    {log.response_status as number}
-                  </span>
-                </div>
-              </div>
-            ))
-          )}
+      {/* Recent Logs */}
+      <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-border">
+          <h2 className="text-lg font-semibold text-foreground">Derniers logs OCPI</h2>
         </div>
-      </div>
-
-      {/* Seed Result */}
-      {seedResult && (
-        <div className="bg-surface border border-border rounded-2xl p-5">
-          <h3 className="font-semibold text-foreground mb-2">Dernier Seed</h3>
-          <pre className="text-xs text-foreground-muted font-mono whitespace-pre-wrap">
-            {JSON.stringify(seedResult, null, 2)}
-          </pre>
-        </div>
-      )}
-
-      {/* Push Result */}
-      {pushResult && (
-        <div className="bg-surface border border-border rounded-2xl p-5">
-          <h3 className="font-semibold text-foreground mb-2">Dernier Push</h3>
-          <pre className="text-xs text-foreground-muted font-mono whitespace-pre-wrap">
-            {JSON.stringify(pushResult, null, 2)}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LocationsTab({ locations }: { locations: Record<string, unknown>[] }) {
-  return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-surface-elevated border-b border-border">
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Location ID</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Nom</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Ville</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">EVSEs</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Status</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">MAJ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {locations.map((loc: Record<string, unknown>) => {
-              const evses = (loc.ocpi_evses as Record<string, unknown>[]) ?? [];
-              return (
-                <tr key={loc.id as string} className="border-b border-border last:border-0 hover:bg-surface-elevated/50">
-                  <td className="px-4 py-3 font-mono text-xs">{loc.ocpi_id as string}</td>
-                  <td className="px-4 py-3 font-medium text-foreground">{(loc.name as string) || "—"}</td>
-                  <td className="px-4 py-3 text-foreground-muted">{loc.city as string}</td>
-                  <td className="px-4 py-3">
-                    {evses.map((evse: Record<string, unknown>) => (
-                      <span
-                        key={evse.uid as string}
-                        className={`inline-block px-2 py-0.5 rounded text-xs font-medium mr-1 ${
-                          evse.status === "AVAILABLE" ? "bg-green-500/15 text-green-500" :
-                          evse.status === "CHARGING" ? "bg-blue-500/15 text-blue-500" :
-                          evse.status === "OUTOFORDER" ? "bg-red-500/15 text-red-500" :
-                          "bg-gray-500/15 text-gray-500"
-                        }`}
-                      >
-                        {evse.status as string}
-                      </span>
-                    ))}
-                  </td>
-                  <td className="px-4 py-3">
-                    {loc.publish ? (
-                      <span className="text-green-500 text-xs">Publié</span>
-                    ) : (
-                      <span className="text-amber-500 text-xs">Masqué</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-foreground-muted">
-                    {new Date(loc.last_updated as string).toLocaleString("fr-FR")}
-                  </td>
+        {isLoading ? (
+          <div className="p-6 space-y-2">
+            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-8 w-full" />)}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Date</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Module</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Action</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Path</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Status</th>
+                  <th className="text-left px-4 py-2.5 text-[11px] font-semibold text-foreground-muted uppercase">Durée</th>
                 </tr>
-              );
-            })}
-            {locations.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-foreground-muted">
-                  Aucune location OCPI. Cliquez "Seed Locations" pour importer les stations.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function SessionsTab({ sessions }: { sessions: Record<string, unknown>[] }) {
-  return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-surface-elevated border-b border-border">
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Session ID</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Status</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">kWh</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Début</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Fin</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Location</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.map((s: Record<string, unknown>) => (
-              <tr key={s.id as string} className="border-b border-border last:border-0">
-                <td className="px-4 py-3 font-mono text-xs">{(s.session_id as string)?.substring(0, 12)}...</td>
-                <td className="px-4 py-3">
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                    s.status === "ACTIVE" ? "bg-blue-500/15 text-blue-500" :
-                    s.status === "COMPLETED" ? "bg-green-500/15 text-green-500" :
-                    "bg-gray-500/15 text-gray-500"
-                  }`}>{s.status as string}</span>
-                </td>
-                <td className="px-4 py-3 font-medium">{Number(s.kwh).toFixed(2)}</td>
-                <td className="px-4 py-3 text-xs">{new Date(s.start_date_time as string).toLocaleString("fr-FR")}</td>
-                <td className="px-4 py-3 text-xs">{s.end_date_time ? new Date(s.end_date_time as string).toLocaleString("fr-FR") : "—"}</td>
-                <td className="px-4 py-3 text-xs text-foreground-muted">{s.location_id as string}</td>
-              </tr>
-            ))}
-            {sessions.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-foreground-muted">Aucune session OCPI</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function CdrsTab({ cdrs }: { cdrs: Record<string, unknown>[] }) {
-  return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-surface-elevated border-b border-border">
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">CDR ID</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Énergie</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Durée</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Coût</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cdrs.map((c: Record<string, unknown>) => (
-              <tr key={c.id as string} className="border-b border-border last:border-0">
-                <td className="px-4 py-3 font-mono text-xs">{(c.cdr_id as string)?.substring(0, 12)}...</td>
-                <td className="px-4 py-3 font-medium">{Number(c.total_energy).toFixed(2)} kWh</td>
-                <td className="px-4 py-3">{Number(c.total_time).toFixed(1)}h</td>
-                <td className="px-4 py-3 font-medium">{Number(c.total_cost).toFixed(2)} {c.currency as string}</td>
-                <td className="px-4 py-3 text-xs">{new Date(c.start_date_time as string).toLocaleString("fr-FR")}</td>
-              </tr>
-            ))}
-            {cdrs.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-foreground-muted">Aucun CDR</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function TokensTab({ tokens }: { tokens: Record<string, unknown>[] }) {
-  return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-surface-elevated border-b border-border">
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">UID</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Type</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Issuer</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Contract</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Valid</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Whitelist</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tokens.map((t: Record<string, unknown>) => (
-              <tr key={t.id as string} className="border-b border-border last:border-0">
-                <td className="px-4 py-3 font-mono text-xs">{t.uid as string}</td>
-                <td className="px-4 py-3">{t.type as string}</td>
-                <td className="px-4 py-3">{t.issuer as string}</td>
-                <td className="px-4 py-3 font-mono text-xs">{t.contract_id as string}</td>
-                <td className="px-4 py-3">
-                  {t.valid ? (
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                  ) : (
-                    <XCircle className="w-4 h-4 text-red-500" />
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs">{t.whitelist as string}</td>
-              </tr>
-            ))}
-            {tokens.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-foreground-muted">Aucun token OCPI</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function PushLogTab({ logs }: { logs: Record<string, unknown>[] }) {
-  return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-surface-elevated border-b border-border">
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Date</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Module</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Action</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Path</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Status</th>
-              <th className="text-left px-4 py-3 font-medium text-foreground-muted">Durée</th>
-            </tr>
-          </thead>
-          <tbody>
-            {logs.map((log: Record<string, unknown>) => (
-              <tr key={log.id as string} className="border-b border-border last:border-0">
-                <td className="px-4 py-3 text-xs">{new Date(log.created_at as string).toLocaleString("fr-FR")}</td>
-                <td className="px-4 py-3 text-xs font-medium">{log.module as string}</td>
-                <td className="px-4 py-3">
-                  <span className="px-2 py-0.5 rounded bg-primary/15 text-primary text-xs font-medium">
-                    {log.action as string}
-                  </span>
-                </td>
-                <td className="px-4 py-3 font-mono text-xs text-foreground-muted truncate max-w-[200px]">
-                  {log.ocpi_path as string}
-                </td>
-                <td className="px-4 py-3">
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      (log.response_status as number) >= 200 && (log.response_status as number) < 300
-                        ? "bg-green-500/15 text-green-500"
-                        : "bg-red-500/15 text-red-500"
-                    }`}
-                  >
-                    {log.response_status as number}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-xs text-foreground-muted">{log.duration_ms as number}ms</td>
-              </tr>
-            ))}
-            {logs.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-foreground-muted">Aucun log de push OCPI</td></tr>
-            )}
-          </tbody>
-        </table>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {(recentLogs ?? []).map((log: Record<string, unknown>) => (
+                  <tr key={log.id as string} className="hover:bg-surface-elevated/50 transition-colors">
+                    <td className="px-4 py-2.5 text-xs text-foreground-muted whitespace-nowrap">{new Date(log.created_at as string).toLocaleString("fr-FR")}</td>
+                    <td className="px-4 py-2.5 text-xs font-medium text-foreground">{log.module as string}</td>
+                    <td className="px-4 py-2.5">
+                      <span className="px-2 py-0.5 rounded bg-primary/15 text-primary text-xs font-medium">{log.action as string}</span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-foreground-muted truncate max-w-[200px]">{log.ocpi_path as string}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded text-xs font-medium",
+                        (log.response_status as number) >= 200 && (log.response_status as number) < 300 ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
+                      )}>
+                        {log.response_status as number}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-foreground-muted">{log.duration_ms as number}ms</td>
+                  </tr>
+                ))}
+                {(recentLogs ?? []).length === 0 && (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-foreground-muted">Aucun log</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
