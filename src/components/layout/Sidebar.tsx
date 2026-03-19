@@ -28,6 +28,7 @@ import {
   ScanLine,
   Building2,
   LifeBuoy,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -163,6 +164,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/validate-token", label: "Valider Token", icon: ScanLine, requiredPermissions: ["stations.commands"] },
       { to: "/support", label: "Support & Ressources", icon: LifeBuoy, requiredPermissions: ["stations.view"] },
+      { to: "/interventions", label: "Interventions", icon: Wrench, requiredPermissions: ["stations.edit"] },
     ],
   },
   {

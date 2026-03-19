@@ -31,6 +31,7 @@ import { handleRoles } from "./_modules/roles.ts";
 import { handleEnergyMix } from "./_modules/energy-mix.ts";
 import { handleExceptions } from "./_modules/exceptions.ts";
 import { handleAdminUsers } from "./_modules/admin-users.ts";
+import { handleTechnician } from "./_modules/technician.ts";
 
 Deno.serve(async (req: Request): Promise<Response> => {
   // CORS preflight
@@ -132,6 +133,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // ─── Admin User Management (admin only) ──────────
       case "admin-users":
         return await withAuth(req, (auth) => handleAdminUsers({ ...ctx, auth }));
+
+      // ─── Technician (interventions, diagnostics, firmware) ──
+      case "technician":
+        return await withAuth(req, (auth) => handleTechnician({ ...ctx, auth }));
 
       default:
         return apiNotFound(`Unknown endpoint: /api/${fullPath}`);
