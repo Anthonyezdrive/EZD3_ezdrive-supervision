@@ -36,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function fetchProfile(userId: string) {
     const { data } = await supabase
       .from("ezdrive_profiles")
-      .select("*")
+      .select("*, admin_role:admin_roles(*)")
       .eq("id", userId)
       .maybeSingle();
 
@@ -55,6 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: "admin",
           territory: null,
           cpo_id: null,
+          admin_role_id: null,
+          admin_role: null,
           created_at: currentUser.created_at,
         });
       }

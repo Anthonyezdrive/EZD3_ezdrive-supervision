@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 import { CpoSelector } from "./CpoSelector";
 
 // ── Section + Item types ──────────────────────────────────
@@ -38,6 +39,8 @@ interface NavItem {
   to: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  /** If set, the user must have at least one of these permissions to see this item */
+  requiredPermissions?: string[];
 }
 
 interface NavSubSection {
@@ -50,6 +53,8 @@ interface NavSection {
   label: string;
   items?: NavItem[];
   subsections?: NavSubSection[];
+  /** If set, the user must have at least one of these permissions to see this section */
+  requiredPermissions?: string[];
 }
 
 const NAV_SECTIONS: NavSection[] = [
@@ -57,49 +62,50 @@ const NAV_SECTIONS: NavSection[] = [
     id: "home",
     label: "Home",
     items: [
-      { to: "/dashboard", label: "Business Overview", icon: LayoutDashboard },
-      { to: "/map", label: "Carte", icon: Map },
-      { to: "/analytics", label: "Analytics SLA", icon: BarChart2 },
+      { to: "/dashboard", label: "Business Overview", icon: LayoutDashboard, requiredPermissions: ["stations.view", "billing.view"] },
+      { to: "/map", label: "Carte", icon: Map, requiredPermissions: ["stations.view"] },
+      { to: "/analytics", label: "Analytics SLA", icon: BarChart2, requiredPermissions: ["stations.view"] },
     ],
   },
   {
     id: "cpo",
     label: "CPO",
+    requiredPermissions: ["stations.view"],
     subsections: [
       {
         label: "Overview",
         items: [
-          { to: "/cpo-overview", label: "Vue d'ensemble CPO", icon: PieChart },
+          { to: "/cpo-overview", label: "Vue d'ensemble CPO", icon: PieChart, requiredPermissions: ["stations.view"] },
         ],
       },
       {
         label: "Network",
         items: [
-          { to: "/cpo-networks", label: "Réseaux CPO", icon: Network },
+          { to: "/cpo-networks", label: "Réseaux CPO", icon: Network, requiredPermissions: ["stations.view"] },
         ],
       },
       {
         label: "Assets",
         items: [
-          { to: "/stations", label: "Bornes", icon: Radio },
-          { to: "/locations", label: "Localisations", icon: MapPin },
-          { to: "/monitoring", label: "Monitoring", icon: MonitorCheck },
-          { to: "/smart-charging", label: "Smart Charging", icon: BatteryCharging },
-          { to: "/energy-mix", label: "Energy Mix", icon: Leaf },
+          { to: "/stations", label: "Bornes", icon: Radio, requiredPermissions: ["stations.view"] },
+          { to: "/locations", label: "Localisations", icon: MapPin, requiredPermissions: ["stations.view"] },
+          { to: "/monitoring", label: "Monitoring", icon: MonitorCheck, requiredPermissions: ["stations.view"] },
+          { to: "/smart-charging", label: "Smart Charging", icon: BatteryCharging, requiredPermissions: ["stations.edit"] },
+          { to: "/energy-mix", label: "Energy Mix", icon: Leaf, requiredPermissions: ["stations.view"] },
         ],
       },
       {
         label: "Billing",
         items: [
-          { to: "/billing", label: "CDRs & Factures", icon: FileText },
-          { to: "/tariffs", label: "Tarifs", icon: Wallet },
-          { to: "/roaming-contracts", label: "Accords & Remboursement", icon: Handshake },
+          { to: "/billing", label: "CDRs & Factures", icon: FileText, requiredPermissions: ["billing.view"] },
+          { to: "/tariffs", label: "Tarifs", icon: Wallet, requiredPermissions: ["billing.tariffs"] },
+          { to: "/roaming-contracts", label: "Accords & Remboursement", icon: Handshake, requiredPermissions: ["ocpi.view"] },
         ],
       },
       {
         label: "Roaming",
         items: [
-          { to: "/ocpi", label: "OCPI Gireve", icon: Globe },
+          { to: "/ocpi", label: "OCPI Gireve", icon: Globe, requiredPermissions: ["ocpi.view"] },
         ],
       },
     ],
@@ -107,24 +113,25 @@ const NAV_SECTIONS: NavSection[] = [
   {
     id: "emsp",
     label: "eMSP",
+    requiredPermissions: ["customers.view"],
     subsections: [
       {
         label: "Network",
         items: [
-          { to: "/emsp-networks", label: "EMSP Network", icon: Network },
+          { to: "/emsp-networks", label: "EMSP Network", icon: Network, requiredPermissions: ["customers.view"] },
         ],
       },
       {
         label: "Customers",
         items: [
-          { to: "/customers", label: "Clients", icon: Users },
-          { to: "/drivers", label: "Conducteurs", icon: UserCheck },
+          { to: "/customers", label: "Clients", icon: Users, requiredPermissions: ["customers.view"] },
+          { to: "/drivers", label: "Conducteurs", icon: UserCheck, requiredPermissions: ["customers.view"] },
         ],
       },
       {
         label: "Moyens de paiement",
         items: [
-          { to: "/payment-methods", label: "Tokens & Abonnements", icon: CreditCard },
+          { to: "/payment-methods", label: "Tokens & Abonnements", icon: CreditCard, requiredPermissions: ["customers.view"] },
         ],
       },
     ],
@@ -132,25 +139,28 @@ const NAV_SECTIONS: NavSection[] = [
   {
     id: "automation",
     label: "Automation",
+    requiredPermissions: ["stations.maintenance", "admin.logs"],
     items: [
-      { to: "/exceptions", label: "Exceptions", icon: ShieldAlert },
+      { to: "/exceptions", label: "Exceptions", icon: ShieldAlert, requiredPermissions: ["stations.maintenance"] },
     ],
   },
   {
     id: "admin",
     label: "Admin",
+    requiredPermissions: ["admin.users", "admin.roles", "admin.settings"],
     items: [
-      { to: "/users", label: "Utilisateurs", icon: Users },
-      { to: "/roles", label: "Rôles & Permissions", icon: Shield },
-      { to: "/admin-config", label: "Configuration", icon: Settings },
-      { to: "/admin/b2b", label: "Gestion B2B", icon: Handshake },
+      { to: "/users", label: "Utilisateurs", icon: Users, requiredPermissions: ["admin.users"] },
+      { to: "/roles", label: "Rôles & Permissions", icon: Shield, requiredPermissions: ["admin.roles"] },
+      { to: "/admin-config", label: "Configuration", icon: Settings, requiredPermissions: ["admin.settings"] },
+      { to: "/admin/b2b", label: "Gestion B2B", icon: Handshake, requiredPermissions: ["admin.users"] },
     ],
   },
   {
     id: "configuration",
     label: "Configuration",
+    requiredPermissions: ["stations.commands"],
     items: [
-      { to: "/validate-token", label: "Valider Token", icon: ScanLine },
+      { to: "/validate-token", label: "Valider Token", icon: ScanLine, requiredPermissions: ["stations.commands"] },
     ],
   },
   {
@@ -187,14 +197,51 @@ interface SidebarProps {
 
 export function Sidebar({ isOpen = false, onClose, collapsed = false, onToggleCollapse }: SidebarProps) {
   const { profile } = useAuth();
+  const { hasAnyPermission, isB2B } = usePermissions();
 
-  // Role-based section filtering
+  // Permission-based filtering helper
+  function filterItemsByPermission(items: NavItem[]): NavItem[] {
+    return items.filter((item) => {
+      if (!item.requiredPermissions || item.requiredPermissions.length === 0) return true;
+      return hasAnyPermission(...item.requiredPermissions);
+    });
+  }
+
+  // Role + permission-based section filtering
   const visibleSections = useMemo(() => {
-    if (profile?.role === "b2b_client") {
+    if (isB2B) {
       return NAV_SECTIONS.filter((s) => s.id === "b2b-portal");
     }
-    return NAV_SECTIONS;
-  }, [profile?.role]);
+
+    return NAV_SECTIONS
+      .filter((section) => {
+        // Hide b2b-portal for non-b2b users
+        if (section.id === "b2b-portal") return false;
+        // Check section-level permissions
+        if (section.requiredPermissions && section.requiredPermissions.length > 0) {
+          return hasAnyPermission(...section.requiredPermissions);
+        }
+        return true;
+      })
+      .map((section) => {
+        // Filter items within sections
+        if (section.items) {
+          const filtered = filterItemsByPermission(section.items);
+          return filtered.length > 0 ? { ...section, items: filtered } : null;
+        }
+        if (section.subsections) {
+          const filteredSubs = section.subsections
+            .map((sub) => ({
+              ...sub,
+              items: filterItemsByPermission(sub.items),
+            }))
+            .filter((sub) => sub.items.length > 0);
+          return filteredSubs.length > 0 ? { ...section, subsections: filteredSubs } : null;
+        }
+        return section;
+      })
+      .filter(Boolean) as NavSection[];
+  }, [isB2B, profile?.admin_role?.permissions]);
 
   // Section-level expand/collapse — Home and CPO expanded by default
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
@@ -363,7 +410,7 @@ export function Sidebar({ isOpen = false, onClose, collapsed = false, onToggleCo
       </div>
 
       {/* CPO Selector */}
-      {profile?.role !== "b2b_client" && (
+      {!isB2B && (
         <CpoSelector collapsed={collapsed} />
       )}
 

@@ -1,8 +1,10 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export function ProtectedRoute() {
-  const { user, profile, loading } = useAuth();
+  const { user, loading } = useAuth();
+  const { isB2B } = usePermissions();
   const location = useLocation();
 
   if (loading) {
@@ -20,10 +22,7 @@ export function ProtectedRoute() {
   }
 
   // B2B clients can only access /b2b/* routes
-  if (
-    profile?.role === "b2b_client" &&
-    !location.pathname.startsWith("/b2b")
-  ) {
+  if (isB2B && !location.pathname.startsWith("/b2b")) {
     return <Navigate to="/b2b/overview" replace />;
   }
 

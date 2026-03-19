@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { LayoutDashboard, FileText, Radio, UserCheck, Building2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 import { B2BFilterProvider, useB2BFilters } from "@/contexts/B2BFilterContext";
 import { useB2BClients, useB2BCdrs, useB2BFilterOptions, useMyB2BClients } from "@/hooks/useB2BCdrs";
 import { B2BFilterBar } from "./B2BFilterBar";
@@ -17,7 +18,7 @@ const B2B_TABS = [
 
 function B2BLayoutInner() {
   const { profile } = useAuth();
-  const isAdmin = profile?.role === "admin";
+  const { isAdmin } = usePermissions();
   const { selectedClientId, setSelectedClientId } = useB2BFilters();
   const location = useLocation();
   const isCompanyPage = location.pathname.includes("/b2b/company");
