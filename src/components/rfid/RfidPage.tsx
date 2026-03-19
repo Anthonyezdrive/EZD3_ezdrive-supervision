@@ -582,7 +582,7 @@ function CreateTokenModal({ onClose, cpoId, onCreated }: { onClose: () => void; 
         visual_number: tokenUid.trim(),
         driver_external_id: selectedDriver?.driver_external_id ?? null,
         driver_name: selectedDriver
-          ? (selectedDriver.full_name ?? [selectedDriver.first_name, selectedDriver.last_name].filter(Boolean).join(" ") || selectedDriver.driver_external_id)
+          ? (selectedDriver.full_name ?? ([selectedDriver.first_name, selectedDriver.last_name].filter(Boolean).join(" ") || selectedDriver.driver_external_id))
           : null,
         customer_group: selectedDriver?.customer_name ?? null,
         status: enabled ? "active" : "inactive",
