@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { X, Loader2 } from "lucide-react";
-import { apiPost, apiPut } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import type { Station, CPOOperator, Territory } from "@/types/station";
 
 interface Props {
@@ -62,9 +62,25 @@ export function StationFormModal({ station, cpos, territories, onClose, onSaved 
 
     try {
       if (isEdit) {
-        await apiPut(`admin-stations/${station.id}`, body);
+        const { error: updateError } = await supabase
+          .from("stations")
+          .update(body)
+          .eq("id", station.id);
+        if (updateError) throw updateError;
       } else {
-        await apiPost("admin-stations", body);
+        const { error: insertError } = await supabase
+          .from("stations")
+          .insert({
+            ...body,
+            source: "manual",
+            ocpp_status: "Unknown",
+            is_online: false,
+            connectors: [],
+          });
+        if (insertError) {
+          if (insertError.code === "23505") throw new Error("Une borne avec cet identifiant OCPP existe déjà");
+          throw insertError;
+        }
       }
       onSaved();
     } catch (err) {
