@@ -36,7 +36,7 @@ interface Invoice {
   issued_at: string | null;
   paid_at: string | null;
   created_at: string;
-  consumer_profiles: { full_name: string | null; email: string | null } | null;
+  all_consumers: { first_name: string | null; last_name: string | null; email: string | null } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ export function InvoicesPage() {
       try {
         const { data, error } = await supabase
           .from("invoices")
-          .select("*, consumer_profiles(full_name, email)")
+          .select("*, all_consumers(first_name, last_name, email)")
           .order("created_at", { ascending: false })
           .limit(200);
         if (error) {
@@ -328,8 +328,8 @@ export function InvoicesPage() {
     const rows = invoices.map((inv) =>
       [
         inv.invoice_number,
-        inv.consumer_profiles?.full_name ?? "",
-        inv.consumer_profiles?.email ?? "",
+        [inv.all_consumers?.first_name, inv.all_consumers?.last_name].filter(Boolean).join(" ") || "",
+        inv.all_consumers?.email ?? "",
         inv.type,
         `${inv.period_start} - ${inv.period_end}`,
         (inv.subtotal_cents / 100).toFixed(2),
@@ -558,11 +558,11 @@ export function InvoicesPage() {
                     <td className="px-4 py-3.5">
                       <div>
                         <p className="text-sm font-medium text-foreground truncate max-w-[180px]">
-                          {inv.consumer_profiles?.full_name ?? "—"}
+                          {[inv.all_consumers?.first_name, inv.all_consumers?.last_name].filter(Boolean).join(" ") || "—"}
                         </p>
-                        {inv.consumer_profiles?.email && (
+                        {inv.all_consumers?.email && (
                           <p className="text-xs text-foreground-muted truncate max-w-[180px]">
-                            {inv.consumer_profiles.email}
+                            {inv.all_consumers.email}
                           </p>
                         )}
                       </div>

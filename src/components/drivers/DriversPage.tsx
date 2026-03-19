@@ -32,7 +32,7 @@ import { useCpo } from "@/contexts/CpoContext";
 interface Driver {
   id: string;
   driver_external_id: string;
-  full_name: string | null;
+  full_name: string | null; // computed from first_name + last_name
   first_name: string | null;
   last_name: string | null;
   email: string | null;
@@ -41,17 +41,14 @@ interface Driver {
   status: string | null;
   retail_package: string | null;
   emsp_contract: string | null;
-  primary_token_uid: string | null;
-  customer_group: string | null;
+  customer_name: string | null;
+  cpo_name: string | null;
   total_sessions: number;
   total_energy_kwh: number;
   first_session_at: string | null;
   last_session_at: string | null;
-  is_active: boolean;
-  admin_notes: string | null;
   source: string | null;
   created_at: string;
-  cpo_id: string | null;
 }
 
 const TABS = ["Tous", "Actifs", "Inactifs"] as const;
@@ -59,7 +56,7 @@ type Tab = (typeof TABS)[number];
 
 type SortKey =
   | "full_name"
-  | "customer_group"
+  | "customer_name"
   | "total_sessions"
   | "total_energy_kwh"
   | "last_session_at"
@@ -128,20 +125,30 @@ export function DriversPage() {
       let from = 0;
       let hasMore = true;
 
+      // Resolve CPO name for filtering if needed
+      let cpoName: string | null = null;
+      if (selectedCpoId) {
+        const { data: cpo } = await supabase.from("cpos").select("name").eq("id", selectedCpoId).single();
+        cpoName = cpo?.name ?? null;
+      }
+
       while (hasMore) {
         let query = supabase
-          .from("gfx_consumers")
-          .select("id, driver_external_id, full_name, first_name, last_name, email, phone, country, status, retail_package, emsp_contract, primary_token_uid, customer_group, total_sessions, total_energy_kwh, first_session_at, last_session_at, is_active, admin_notes, source, created_at, cpo_id")
+          .from("all_consumers")
+          .select("id, driver_external_id, first_name, last_name, email, phone, country, status, retail_package, emsp_contract, customer_name, cpo_name, total_sessions, total_energy_kwh, first_session_at, last_session_at, source, created_at")
           .order("total_sessions", { ascending: false })
           .range(from, from + PAGE - 1);
 
-        if (selectedCpoId) {
-          query = query.eq("cpo_id", selectedCpoId);
+        if (cpoName) {
+          query = query.eq("cpo_name", cpoName);
         }
 
         const { data, error } = await query;
         if (error) throw error;
-        const rows = (data ?? []) as Driver[];
+        const rows = ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+          ...r,
+          full_name: [r.first_name, r.last_name].filter(Boolean).join(" ") || null,
+        })) as Driver[];
         allRows = allRows.concat(rows);
         from += PAGE;
         hasMore = rows.length === PAGE;
@@ -210,8 +217,8 @@ export function DriversPage() {
       list = list.filter((d) =>
         (d.full_name ?? "").toLowerCase().includes(q) ||
         d.driver_external_id.toLowerCase().includes(q) ||
-        (d.customer_group ?? "").toLowerCase().includes(q) ||
-        (d.primary_token_uid ?? "").toLowerCase().includes(q)
+        (d.customer_name ?? "").toLowerCase().includes(q) ||
+        (d.email ?? "").toLowerCase().includes(q)
       );
     }
 
@@ -357,7 +364,7 @@ export function DriversPage() {
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">État</th>
                   <th className={thClass} onClick={() => handleSort("full_name")}>Conducteur <SortIcon col="full_name" /></th>
-                  <th className={thClass} onClick={() => handleSort("customer_group")}>Forfait / Groupe <SortIcon col="customer_group" /></th>
+                  <th className={thClass} onClick={() => handleSort("customer_name")}>Forfait / Groupe <SortIcon col="customer_name" /></th>
                   <th className={thClass}>Pays</th>
                   <th className={cn(thClass, "text-right")} onClick={() => handleSort("total_sessions")}>Sessions <SortIcon col="total_sessions" /></th>
                   <th className={cn(thClass, "text-right")} onClick={() => handleSort("total_energy_kwh")}>Énergie <SortIcon col="total_energy_kwh" /></th>
@@ -397,13 +404,13 @@ export function DriversPage() {
                           <div className="min-w-0">
                             <p className="text-sm font-medium text-foreground truncate max-w-[200px]">{displayName}</p>
                             <p className="text-xs text-foreground-muted truncate max-w-[200px]">
-                              {driver.email ?? driver.primary_token_uid ?? driver.driver_external_id}
+                              {driver.email ?? driver.driver_external_id}
                             </p>
                           </div>
                         </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground-muted truncate max-w-[180px]">
-                        {driver.retail_package ?? driver.customer_group ?? "—"}
+                        {driver.retail_package ?? driver.customer_name ?? "—"}
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground-muted">
                         {driver.country ?? "—"}
@@ -512,8 +519,8 @@ function DriverDetailDrawer({ driver, onClose }: { driver: Driver; onClose: () =
                 )}>
                   {isActive ? "Actif" : "Inactif"}
                 </span>
-                {driver.customer_group && (
-                  <span className="text-xs text-foreground-muted">{driver.customer_group}</span>
+                {driver.customer_name && (
+                  <span className="text-xs text-foreground-muted">{driver.customer_name}</span>
                 )}
               </div>
             </div>
@@ -555,8 +562,8 @@ function DriverDetailDrawer({ driver, onClose }: { driver: Driver; onClose: () =
             <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Forfait & Rattachement</p>
             <DetailItem label="Forfait" value={driver.retail_package ?? "—"} />
             <DetailItem label="Contrat eMSP" value={driver.emsp_contract ?? "—"} />
-            <DetailItem label="Groupe / Client" value={driver.customer_group ?? "—"} />
-            <DetailItem label="Token principal" value={driver.primary_token_uid ?? "—"} />
+            <DetailItem label="Groupe / Client" value={driver.customer_name ?? "—"} />
+            <DetailItem label="CPO" value={driver.cpo_name ?? "—"} />
           </div>
 
           {/* Charge */}
@@ -582,14 +589,6 @@ function DriverDetailDrawer({ driver, onClose }: { driver: Driver; onClose: () =
               </p>
             )}
           </div>
-
-          {/* Notes */}
-          {driver.admin_notes && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Notes</p>
-              <p className="text-sm text-foreground-muted">{driver.admin_notes}</p>
-            </div>
-          )}
 
           {/* ID technique */}
           <div className="pt-3 border-t border-border">

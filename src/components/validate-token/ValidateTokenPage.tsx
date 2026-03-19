@@ -77,28 +77,28 @@ export function ValidateTokenPage() {
       const card = cards?.[0];
 
       if (!card) {
-        // Try ocpi_tokens as fallback
-        let ocpiQuery = supabase.from("ocpi_tokens").select("*");
-        if (searchMode === "auth_id") ocpiQuery = ocpiQuery.eq("uid", trimmed);
-        else if (searchMode === "visual_id") ocpiQuery = ocpiQuery.eq("visual_number", trimmed);
-        else ocpiQuery = ocpiQuery.eq("uid", trimmed);
+        // Try all_tokens unified view as fallback (covers ocpi_tokens, gfx_tokens, etc.)
+        let tokenQuery = supabase.from("all_tokens").select("*");
+        if (searchMode === "auth_id") tokenQuery = tokenQuery.eq("uid", trimmed);
+        else if (searchMode === "visual_id") tokenQuery = tokenQuery.eq("visual_number", trimmed);
+        else tokenQuery = tokenQuery.eq("uid", trimmed);
 
-        const { data: tokens } = await ocpiQuery.limit(1);
+        const { data: tokens } = await tokenQuery.limit(1);
         const token = tokens?.[0];
 
         if (!token) {
           return { found: false } as TokenResult;
         }
 
-        // Found in ocpi_tokens — look up user
+        // Found in all_tokens — look up user
         let user: TokenResult["user"] = undefined;
         if (token.consumer_id) {
           const { data: profile } = await supabase
-            .from("consumer_profiles")
-            .select("id, full_name, email, phone, status")
+            .from("all_consumers")
+            .select("id, first_name, last_name, email, phone, status")
             .eq("id", token.consumer_id)
             .single();
-          if (profile) user = profile;
+          if (profile) user = { ...profile, full_name: [profile.first_name, profile.last_name].filter(Boolean).join(" ") || null };
         }
 
         return {
@@ -120,11 +120,11 @@ export function ValidateTokenPage() {
       let user: TokenResult["user"] = undefined;
       if (card.consumer_id) {
         const { data: profile } = await supabase
-          .from("consumer_profiles")
-          .select("id, full_name, email, phone, status")
+          .from("all_consumers")
+          .select("id, first_name, last_name, email, phone, status")
           .eq("id", card.consumer_id)
           .single();
-        if (profile) user = profile;
+        if (profile) user = { ...profile, full_name: [profile.first_name, profile.last_name].filter(Boolean).join(" ") || null };
       }
 
       return {

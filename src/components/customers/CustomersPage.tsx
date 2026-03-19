@@ -29,22 +29,26 @@ import { useCpo } from "@/contexts/CpoContext";
 interface Customer {
   id: string;
   driver_external_id: string;
-  full_name: string | null;
-  primary_token_uid: string | null;
-  customer_group: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  full_name: string | null; // computed from first_name + last_name
+  email: string | null;
+  phone: string | null;
+  customer_name: string | null;
+  cpo_name: string | null;
   total_sessions: number;
   total_energy_kwh: number;
   first_session_at: string | null;
   last_session_at: string | null;
-  is_active: boolean;
-  admin_notes: string | null;
+  status: string | null;
+  retail_package: string | null;
   created_at: string;
-  cpo_id: string | null;
+  source: string | null;
 }
 
 type SortKey =
   | "full_name"
-  | "customer_group"
+  | "customer_name"
   | "total_sessions"
   | "total_energy_kwh"
   | "last_session_at"
@@ -292,19 +296,26 @@ export function CustomersPage() {
 
       while (hasMore) {
         let query = supabase
-          .from("gfx_consumers")
-          .select("id, driver_external_id, full_name, primary_token_uid, customer_group, total_sessions, total_energy_kwh, first_session_at, last_session_at, is_active, admin_notes, created_at, cpo_id")
+          .from("all_consumers")
+          .select("id, driver_external_id, first_name, last_name, email, phone, customer_name, cpo_name, total_sessions, total_energy_kwh, first_session_at, last_session_at, status, retail_package, created_at, source")
           .order("total_sessions", { ascending: false })
           .range(from, from + PAGE - 1);
 
-        // Filter by selected CPO
+        // Filter by selected CPO name
         if (selectedCpoId) {
-          query = query.eq("cpo_id", selectedCpoId);
+          // all_consumers uses cpo_name instead of cpo_id — resolve name first
+          const { data: cpo } = await supabase.from("cpos").select("name").eq("id", selectedCpoId).single();
+          if (cpo?.name) {
+            query = query.eq("cpo_name", cpo.name);
+          }
         }
 
         const { data, error } = await query;
         if (error) throw error;
-        const rows = (data ?? []) as Customer[];
+        const rows = ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+          ...r,
+          full_name: [r.first_name, r.last_name].filter(Boolean).join(" ") || null,
+        })) as Customer[];
         allRows = allRows.concat(rows);
         from += PAGE;
         hasMore = rows.length === PAGE;
@@ -357,8 +368,8 @@ export function CustomersPage() {
       return (
         c.full_name?.toLowerCase().includes(q) ||
         c.driver_external_id?.toLowerCase().includes(q) ||
-        c.customer_group?.toLowerCase().includes(q) ||
-        c.primary_token_uid?.toLowerCase().includes(q)
+        c.customer_name?.toLowerCase().includes(q) ||
+        c.email?.toLowerCase().includes(q)
       );
     });
   }, [customers, search]);
@@ -540,8 +551,8 @@ export function CustomersPage() {
                   <th className={thClass} onClick={() => handleSort("full_name")}>
                     Conducteur <SortIcon col="full_name" />
                   </th>
-                  <th className={thClass} onClick={() => handleSort("customer_group")}>
-                    Groupe <SortIcon col="customer_group" />
+                  <th className={thClass} onClick={() => handleSort("customer_name")}>
+                    Groupe <SortIcon col="customer_name" />
                   </th>
                   <th className={cn(thClass, "text-right")} onClick={() => handleSort("total_sessions")}>
                     Sessions <SortIcon col="total_sessions" />
@@ -584,9 +595,9 @@ export function CustomersPage() {
                             <p className="text-sm font-medium text-foreground truncate">
                               {displayName}
                             </p>
-                            {customer.primary_token_uid && (
-                              <p className="text-xs text-foreground-muted truncate font-mono">
-                                {customer.primary_token_uid}
+                            {customer.email && (
+                              <p className="text-xs text-foreground-muted truncate">
+                                {customer.email}
                               </p>
                             )}
                           </div>
@@ -595,7 +606,7 @@ export function CustomersPage() {
 
                       {/* Groupe */}
                       <td className="px-4 py-3 text-sm text-foreground-muted truncate max-w-[180px]">
-                        {customer.customer_group ?? "\u2014"}
+                        {customer.customer_name ?? "\u2014"}
                       </td>
 
                       {/* Sessions */}
@@ -732,8 +743,8 @@ function CustomerDetailDrawer({
             </div>
             <div>
               <h2 className="font-heading font-bold text-base">{displayName}</h2>
-              {customer.customer_group && (
-                <p className="text-xs text-foreground-muted">{customer.customer_group}</p>
+              {customer.customer_name && (
+                <p className="text-xs text-foreground-muted">{customer.customer_name}</p>
               )}
             </div>
           </div>
@@ -759,9 +770,10 @@ function CustomerDetailDrawer({
           {/* Informations */}
           <div className="space-y-2">
             <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Informations</p>
-            <DetailItem label="Groupe client" value={customer.customer_group ?? "—"} />
-            <DetailItem label="Token principal" value={customer.primary_token_uid ?? "—"} />
-            <DetailItem label="Statut" value={customer.is_active ? "Actif" : "Inactif"} />
+            <DetailItem label="Groupe client" value={customer.customer_name ?? "—"} />
+            {customer.email && <DetailItem label="Email" value={customer.email} />}
+            {customer.phone && <DetailItem label="Téléphone" value={customer.phone} />}
+            <DetailItem label="Statut" value={customer.status ?? "—"} />
             {customer.first_session_at && (
               <DetailItem label="Première charge" value={new Date(customer.first_session_at).toLocaleDateString("fr-FR")} />
             )}
@@ -769,20 +781,16 @@ function CustomerDetailDrawer({
               <DetailItem label="Dernière charge" value={formatRelativeDate(customer.last_session_at)} />
             )}
           </div>
-          {/* ID GreenFlux */}
+          {/* Identifiant externe */}
           <div className="space-y-2">
-            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Identifiant GreenFlux</p>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Identifiant externe</p>
             <p className="text-xs text-foreground font-mono bg-surface-elevated border border-border rounded-lg px-3 py-2 break-all">
               {customer.driver_external_id}
             </p>
+            {customer.source && (
+              <p className="text-xs text-foreground-muted">Source: <span className="font-medium">{customer.source}</span></p>
+            )}
           </div>
-          {/* Notes */}
-          {customer.admin_notes && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Notes</p>
-              <p className="text-sm text-foreground-muted">{customer.admin_notes}</p>
-            </div>
-          )}
           {/* ID technique */}
           <div className="pt-3 border-t border-border">
             <p className="text-xs text-foreground-muted">

@@ -46,8 +46,9 @@ interface UserSubscription {
     billing_period: string;
     discount_percent: number | null;
   } | null;
-  consumer_profiles: {
-    full_name: string | null;
+  all_consumers: {
+    first_name: string | null;
+    last_name: string | null;
     email: string | null;
   } | null;
 }
@@ -164,18 +165,18 @@ export function SubscriptionsPage() {
         const { data, error } = await supabase
           .from("user_subscriptions")
           .select(
-            "*, subscription_offers(name, price_cents, billing_period, discount_percent), consumer_profiles(full_name, email)"
+            "*, subscription_offers(name, price_cents, billing_period, discount_percent), all_consumers(first_name, last_name, email)"
           )
           .order("created_at", { ascending: false });
         if (error) {
-          // If join fails, try without consumer_profiles
+          // If join fails, try without all_consumers
           console.warn("[Subscriptions] join failed, trying without profiles:", error.message);
           const { data: fallback, error: err2 } = await supabase
             .from("user_subscriptions")
             .select("*, subscription_offers(name, price_cents, billing_period, discount_percent)")
             .order("created_at", { ascending: false });
           if (err2) { console.warn("[Subscriptions]:", err2.message); return []; }
-          return (fallback ?? []).map((d) => ({ ...d, consumer_profiles: null })) as UserSubscription[];
+          return (fallback ?? []).map((d) => ({ ...d, all_consumers: null })) as UserSubscription[];
         }
         return (data ?? []) as UserSubscription[];
       } catch { return []; }
@@ -206,8 +207,8 @@ export function SubscriptionsPage() {
       if (statusFilter !== "ALL" && s.status !== statusFilter) return false;
       if (search) {
         const q = search.toLowerCase();
-        const name = s.consumer_profiles?.full_name?.toLowerCase() ?? "";
-        const email = s.consumer_profiles?.email?.toLowerCase() ?? "";
+        const name = [s.all_consumers?.first_name, s.all_consumers?.last_name].filter(Boolean).join(" ").toLowerCase();
+        const email = s.all_consumers?.email?.toLowerCase() ?? "";
         const offer = s.subscription_offers?.name?.toLowerCase() ?? "";
         return name.includes(q) || email.includes(q) || offer.includes(q);
       }
@@ -389,10 +390,10 @@ export function SubscriptionsPage() {
                           className="border-b border-border last:border-0 hover:bg-surface-elevated/50 transition-colors"
                         >
                           <td className="px-4 py-3 font-medium text-foreground">
-                            {sub.consumer_profiles?.full_name ?? "—"}
+                            {[sub.all_consumers?.first_name, sub.all_consumers?.last_name].filter(Boolean).join(" ") || "—"}
                           </td>
                           <td className="px-4 py-3 text-foreground-muted text-xs">
-                            {sub.consumer_profiles?.email ?? "—"}
+                            {sub.all_consumers?.email ?? "—"}
                           </td>
                           <td className="px-4 py-3">
                             <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-semibold">
