@@ -15,6 +15,8 @@ import {
   ChevronDown,
   Loader2,
   X,
+  Calendar,
+  CalendarPlus,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMaintenanceStations } from "@/hooks/useMaintenanceStations";
@@ -105,7 +107,7 @@ export function MaintenancePage() {
   const { data: cpos } = useCPOs();
   const { data: territories } = useTerritories();
   const [filters, setFilters] = useState<StationFilters>(DEFAULT_FILTERS);
-  const [activeTab, setActiveTab] = useState<"faults" | "tickets">("faults");
+  const [activeTab, setActiveTab] = useState<"faults" | "tickets" | "scheduled">("faults");
 
   // ── Ticket states ──
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -228,6 +230,66 @@ export function MaintenancePage() {
     onError: (err: Error) => toastError("Erreur", err.message),
   });
 
+  // ── Scheduled maintenance query ──
+  const { data: scheduledTasks, isLoading: scheduledLoading } = useQuery<{
+    id: string;
+    station_id: string | null;
+    station_name: string | null;
+    title: string;
+    description: string | null;
+    scheduled_date: string;
+    technician: string | null;
+    status: string;
+    recurrence: string | null;
+    created_at: string;
+  }[]>({
+    queryKey: ["scheduled-maintenance"],
+    retry: false,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from("scheduled_maintenance")
+          .select("*")
+          .order("scheduled_date", { ascending: true });
+        if (error) { console.warn("[MaintenancePage] scheduled:", error.message); return []; }
+        return data ?? [];
+      } catch { return []; }
+    },
+  });
+
+  // ── Schedule maintenance modal ──
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduleForm, setScheduleForm] = useState({
+    station_name: "",
+    title: "",
+    description: "",
+    scheduled_date: "",
+    technician: "",
+    recurrence: "none",
+  });
+
+  const scheduleMutation = useMutation({
+    mutationFn: async (data: typeof scheduleForm) => {
+      const { error } = await supabase.from("scheduled_maintenance").insert({
+        station_name: data.station_name || null,
+        title: data.title,
+        description: data.description || null,
+        scheduled_date: data.scheduled_date || null,
+        technician: data.technician || null,
+        recurrence: data.recurrence === "none" ? null : data.recurrence,
+        status: "planned",
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scheduled-maintenance"] });
+      setShowScheduleModal(false);
+      setScheduleForm({ station_name: "", title: "", description: "", scheduled_date: "", technician: "", recurrence: "none" });
+      toastSuccess("Maintenance planifiee", "La tache de maintenance a ete ajoutee au planning");
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
   // ── Quick create from station ──
   function openCreateForStation(stationId: string, stationName: string) {
     setTicketForm({
@@ -318,6 +380,16 @@ export function MaintenancePage() {
               {ticketStats.open > 9 ? "9+" : ticketStats.open}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => setActiveTab("scheduled")}
+          className={cn(
+            "flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium transition-colors",
+            activeTab === "scheduled" ? "bg-primary/15 text-primary" : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
+          )}
+        >
+          <Calendar className="w-3.5 h-3.5" />
+          Planning ({scheduledTasks?.length ?? 0})
         </button>
       </div>
 
@@ -422,6 +494,199 @@ export function MaintenancePage() {
             </div>
           )}
         </>
+      )}
+
+      {/* ── SCHEDULED TAB ── */}
+      {activeTab === "scheduled" && (
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-foreground-muted">
+              {scheduledTasks?.length ?? 0} maintenance(s) planifiee(s)
+            </p>
+            <button
+              onClick={() => setShowScheduleModal(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+            >
+              <CalendarPlus className="w-4 h-4" />
+              Planifier maintenance
+            </button>
+          </div>
+
+          {scheduledLoading ? (
+            <TableSkeleton rows={3} />
+          ) : (scheduledTasks ?? []).length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 bg-surface border border-border rounded-2xl">
+              <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-3">
+                <Calendar className="w-6 h-6 text-primary" />
+              </div>
+              <p className="text-foreground font-medium">Aucune maintenance planifiee</p>
+              <p className="text-sm text-foreground-muted mt-1">
+                Planifiez vos maintenances preventives pour anticiper les pannes.
+              </p>
+              <button
+                onClick={() => setShowScheduleModal(true)}
+                className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-primary text-white text-sm font-semibold rounded-xl hover:bg-primary/90 transition-colors"
+              >
+                <CalendarPlus className="w-4 h-4" /> Planifier
+              </button>
+            </div>
+          ) : (
+            <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-foreground-muted border-b border-border bg-surface-elevated">
+                      <th className="text-left font-medium px-4 py-3">Titre</th>
+                      <th className="text-left font-medium px-4 py-3">Borne</th>
+                      <th className="text-left font-medium px-4 py-3">Technicien</th>
+                      <th className="text-left font-medium px-4 py-3">Date planifiee</th>
+                      <th className="text-left font-medium px-4 py-3">Recurrence</th>
+                      <th className="text-left font-medium px-4 py-3">Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {(scheduledTasks ?? []).map((task) => (
+                      <tr key={task.id} className="hover:bg-surface-elevated/50 transition-colors">
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-foreground">{task.title}</p>
+                          {task.description && <p className="text-xs text-foreground-muted line-clamp-1">{task.description}</p>}
+                        </td>
+                        <td className="px-4 py-3 text-foreground-muted text-xs">{task.station_name ?? "--"}</td>
+                        <td className="px-4 py-3 text-foreground-muted text-xs">{task.technician ?? "--"}</td>
+                        <td className="px-4 py-3 text-foreground-muted text-xs">
+                          {task.scheduled_date
+                            ? new Date(task.scheduled_date).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+                            : "--"}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-0.5 bg-surface-elevated text-foreground-muted text-[10px] font-semibold rounded">
+                            {task.recurrence ?? "Ponctuel"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={cn(
+                            "inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[10px] font-semibold",
+                            task.status === "planned" ? "bg-blue-500/10 text-blue-400 border-blue-500/25" :
+                            task.status === "completed" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/25" :
+                            "bg-foreground-muted/10 text-foreground-muted border-border"
+                          )}>
+                            {task.status === "planned" ? "Planifie" : task.status === "completed" ? "Termine" : task.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Schedule Maintenance Modal ── */}
+      {showScheduleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h2 className="font-semibold text-foreground">Planifier une maintenance</h2>
+              <button onClick={() => setShowScheduleModal(false)} className="text-foreground-muted hover:text-foreground transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!scheduleForm.title.trim()) return;
+                scheduleMutation.mutate(scheduleForm);
+              }}
+              className="p-6 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Titre *</label>
+                <input
+                  required
+                  value={scheduleForm.title}
+                  onChange={(e) => setScheduleForm((f) => ({ ...f, title: e.target.value }))}
+                  placeholder="Maintenance preventive trimestrielle"
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Description</label>
+                <textarea
+                  value={scheduleForm.description}
+                  onChange={(e) => setScheduleForm((f) => ({ ...f, description: e.target.value }))}
+                  rows={2}
+                  className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors resize-none"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Borne</label>
+                  <input
+                    value={scheduleForm.station_name}
+                    onChange={(e) => setScheduleForm((f) => ({ ...f, station_name: e.target.value }))}
+                    placeholder="EZD-001"
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Technicien</label>
+                  <input
+                    value={scheduleForm.technician}
+                    onChange={(e) => setScheduleForm((f) => ({ ...f, technician: e.target.value }))}
+                    placeholder="Jean Dupont"
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Date et heure *</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={scheduleForm.scheduled_date}
+                    onChange={(e) => setScheduleForm((f) => ({ ...f, scheduled_date: e.target.value }))}
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Recurrence</label>
+                  <select
+                    value={scheduleForm.recurrence}
+                    onChange={(e) => setScheduleForm((f) => ({ ...f, recurrence: e.target.value }))}
+                    className="w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+                  >
+                    <option value="none">Ponctuel</option>
+                    <option value="weekly">Hebdomadaire</option>
+                    <option value="monthly">Mensuel</option>
+                    <option value="quarterly">Trimestriel</option>
+                    <option value="yearly">Annuel</option>
+                  </select>
+                </div>
+              </div>
+              {scheduleMutation.error && (
+                <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg text-sm text-red-400">
+                  {(scheduleMutation.error as Error)?.message}
+                </div>
+              )}
+              <div className="flex gap-3 pt-2">
+                <button type="button" onClick={() => setShowScheduleModal(false)} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={scheduleMutation.isPending || !scheduleForm.title.trim()}
+                  className="flex-1 py-2.5 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                >
+                  {scheduleMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                  Planifier
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* ── Create Ticket Modal ── */}

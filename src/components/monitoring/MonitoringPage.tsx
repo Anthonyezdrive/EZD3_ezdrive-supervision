@@ -28,9 +28,20 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  History,
+  ClipboardList,
+  FileText,
+  Search,
+  Download,
+  Calendar,
+  ChevronDown,
+  CheckCircle2,
+  XCircle,
+  Filter,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn, formatDuration, formatRelativeTime } from "@/lib/utils";
+import { downloadCSV, todayISO } from "@/lib/export";
 import { useCpo } from "@/contexts/CpoContext";
 import { KPICard } from "@/components/ui/KPICard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -40,6 +51,8 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { PageHelp } from "@/components/ui/PageHelp";
 import type { Station } from "@/types/station";
 import { MaintenancePage } from "@/components/maintenance/MaintenancePage";
+import { useToast } from "@/contexts/ToastContext";
+import { SlideOver } from "@/components/ui/SlideOver";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -1022,15 +1035,654 @@ function AlertsTab() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// ALERT HISTORY TAB (Story 3)
+// ══════════════════════════════════════════════════════════════
+
+function AlertHistoryTab() {
+  const { data: history, isLoading } = useAlertHistory();
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [stationSearch, setStationSearch] = useState("");
+
+  const filtered = useMemo(() => {
+    if (!history) return [];
+    return (history as any[]).filter((entry) => {
+      if (statusFilter !== "all" && entry.alert_type !== statusFilter) return false;
+      if (stationSearch) {
+        const q = stationSearch.toLowerCase();
+        const name = entry.stations?.name?.toLowerCase() ?? "";
+        const id = entry.station_id?.toLowerCase() ?? "";
+        if (!name.includes(q) && !id.includes(q)) return false;
+      }
+      if (dateFrom) {
+        const entryDate = new Date(entry.sent_at).toISOString().slice(0, 10);
+        if (entryDate < dateFrom) return false;
+      }
+      if (dateTo) {
+        const entryDate = new Date(entry.sent_at).toISOString().slice(0, 10);
+        if (entryDate > dateTo) return false;
+      }
+      return true;
+    });
+  }, [history, statusFilter, stationSearch, dateFrom, dateTo]);
+
+  const alertTypes = useMemo(() => {
+    if (!history) return [];
+    const types = new Set((history as any[]).map((h) => h.alert_type).filter(Boolean));
+    return Array.from(types);
+  }, [history]);
+
+  function handleExportCSV() {
+    const rows = filtered.map((entry: any) => ({
+      Borne: entry.stations?.name ?? entry.station_id,
+      Type: entry.alert_type,
+      "Heures en panne": entry.hours_in_fault != null ? Number(entry.hours_in_fault).toFixed(1) : "",
+      "Envoyé le": entry.sent_at ? new Date(entry.sent_at).toLocaleString("fr-FR") : "",
+    }));
+    downloadCSV(rows, `ezdrive-alertes-historique-${todayISO()}.csv`);
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-end">
+        <div className="flex-1 min-w-[200px] max-w-xs">
+          <label className="block text-xs text-foreground-muted mb-1">Rechercher borne</label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+            <input
+              type="text"
+              placeholder="Nom ou ID..."
+              value={stationSearch}
+              onChange={(e) => setStationSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-foreground-muted mb-1">Type d'alerte</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+          >
+            <option value="all">Tous les types</option>
+            {alertTypes.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-foreground-muted mb-1">Du</label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-foreground-muted mb-1">Au</label>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors"
+          />
+        </div>
+        <button
+          onClick={handleExportCSV}
+          disabled={filtered.length === 0}
+          className="flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground hover:border-foreground-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Download className="w-4 h-4" />
+          CSV
+        </button>
+      </div>
+
+      {/* Stats */}
+      <div className="flex gap-4 text-xs text-foreground-muted">
+        <span>{filtered.length} alerte{filtered.length !== 1 ? "s" : ""}</span>
+        {dateFrom && <span>depuis {dateFrom}</span>}
+        {dateTo && <span>jusqu'au {dateTo}</span>}
+      </div>
+
+      {/* Table */}
+      {isLoading ? (
+        <div className="space-y-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="h-12 bg-surface border border-border rounded-xl animate-pulse" />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48 bg-surface border border-border rounded-2xl">
+          <History className="w-8 h-8 text-foreground-muted/40 mb-2" />
+          <p className="text-foreground-muted">Aucune alerte dans l'historique</p>
+          <p className="text-xs text-foreground-muted/60 mt-1">Ajustez vos filtres ou attendez que des alertes soient envoyées.</p>
+        </div>
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-foreground-muted border-b border-border bg-surface-elevated">
+                  <th className="text-left font-medium px-4 py-3">Borne</th>
+                  <th className="text-left font-medium px-4 py-3">Type</th>
+                  <th className="text-left font-medium px-4 py-3">Heures en panne</th>
+                  <th className="text-left font-medium px-4 py-3">Envoyé le</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filtered.map((entry: any) => (
+                  <tr key={entry.id} className="hover:bg-surface-elevated/50 transition-colors">
+                    <td className="px-4 py-3 font-medium text-foreground">
+                      {entry.stations?.name ?? entry.station_id?.slice(0, 8) ?? "--"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 bg-red-500/10 text-red-400 text-xs font-medium rounded-lg">
+                        {entry.alert_type}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted tabular-nums">
+                      {entry.hours_in_fault != null ? `${Number(entry.hours_in_fault).toFixed(1)}h` : "--"}
+                    </td>
+                    <td className="px-4 py-3 text-foreground-muted text-xs">
+                      {entry.sent_at
+                        ? new Date(entry.sent_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+                        : "--"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// INTERVENTIONS TAB (Stories 28-30)
+// ══════════════════════════════════════════════════════════════
+
+interface Intervention {
+  id: string;
+  station_id: string | null;
+  station_name: string | null;
+  type: string;
+  title: string;
+  description: string | null;
+  technician: string | null;
+  status: "planned" | "in_progress" | "completed" | "cancelled";
+  priority: "low" | "medium" | "high" | "critical";
+  scheduled_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  report: string | null;
+  parts_used: string | null;
+  duration_minutes: number | null;
+  created_at: string;
+}
+
+const INTERVENTION_STATUS_CONFIG: Record<string, { label: string; bg: string; text: string; border: string; dot: string }> = {
+  planned:     { label: "Planifié",  bg: "bg-blue-500/10",    text: "text-blue-400",    border: "border-blue-500/25",    dot: "#60A5FA" },
+  in_progress: { label: "En cours",  bg: "bg-amber-500/10",   text: "text-amber-400",   border: "border-amber-500/25",   dot: "#FBBF24" },
+  completed:   { label: "Terminé",   bg: "bg-emerald-500/10", text: "text-emerald-400", border: "border-emerald-500/25", dot: "#34D399" },
+  cancelled:   { label: "Annulé",    bg: "bg-foreground-muted/10", text: "text-foreground-muted", border: "border-border", dot: "#6B7280" },
+};
+
+const INTERVENTION_TYPES = [
+  { value: "preventive", label: "Préventive" },
+  { value: "corrective", label: "Corrective" },
+  { value: "installation", label: "Installation" },
+  { value: "inspection", label: "Inspection" },
+  { value: "firmware", label: "Mise à jour firmware" },
+  { value: "other", label: "Autre" },
+];
+
+const EMPTY_INTERVENTION = {
+  station_id: "",
+  station_name: "",
+  type: "corrective",
+  title: "",
+  description: "",
+  technician: "",
+  priority: "medium" as Intervention["priority"],
+  scheduled_at: "",
+  report: "",
+  parts_used: "",
+  duration_minutes: null as number | null,
+};
+
+function useInterventions() {
+  return useQuery<Intervention[]>({
+    queryKey: ["interventions"],
+    retry: false,
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase
+          .from("interventions")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (error) {
+          console.warn("[Interventions] error:", error.message);
+          return [];
+        }
+        return (data ?? []) as Intervention[];
+      } catch {
+        return [];
+      }
+    },
+  });
+}
+
+function InterventionsTab() {
+  const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
+  const { data: interventions, isLoading } = useInterventions();
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState<Intervention | null>(null);
+  const [form, setForm] = useState(EMPTY_INTERVENTION);
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [showReport, setShowReport] = useState<Intervention | null>(null);
+
+  // CRUD mutations
+  const createMutation = useMutation({
+    mutationFn: async (data: typeof EMPTY_INTERVENTION) => {
+      const { error } = await supabase.from("interventions").insert({
+        station_id: data.station_id || null,
+        station_name: data.station_name || null,
+        type: data.type,
+        title: data.title,
+        description: data.description || null,
+        technician: data.technician || null,
+        priority: data.priority,
+        scheduled_at: data.scheduled_at || null,
+        status: "planned",
+      });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["interventions"] });
+      closeModal();
+      toastSuccess("Intervention planifiee", "L'intervention a ete ajoutee");
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, ...data }: { id: string } & Partial<typeof EMPTY_INTERVENTION & { status: string }>) => {
+      const patch: Record<string, unknown> = {};
+      if (data.title !== undefined) patch.title = data.title;
+      if (data.description !== undefined) patch.description = data.description || null;
+      if (data.technician !== undefined) patch.technician = data.technician || null;
+      if (data.priority !== undefined) patch.priority = data.priority;
+      if (data.type !== undefined) patch.type = data.type;
+      if (data.scheduled_at !== undefined) patch.scheduled_at = data.scheduled_at || null;
+      if ((data as any).status !== undefined) {
+        patch.status = (data as any).status;
+        if ((data as any).status === "in_progress") patch.started_at = new Date().toISOString();
+        if ((data as any).status === "completed") patch.completed_at = new Date().toISOString();
+      }
+      if (data.report !== undefined) patch.report = data.report || null;
+      if (data.parts_used !== undefined) patch.parts_used = data.parts_used || null;
+      if (data.duration_minutes !== undefined) patch.duration_minutes = data.duration_minutes;
+      const { error } = await supabase.from("interventions").update(patch).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["interventions"] });
+      closeModal();
+      setShowReport(null);
+      toastSuccess("Intervention mise a jour");
+    },
+    onError: (err: Error) => toastError("Erreur", err.message),
+  });
+
+  function openCreate() {
+    setEditing(null);
+    setForm(EMPTY_INTERVENTION);
+    setShowModal(true);
+  }
+
+  function openEdit(intervention: Intervention) {
+    setEditing(intervention);
+    setForm({
+      station_id: intervention.station_id ?? "",
+      station_name: intervention.station_name ?? "",
+      type: intervention.type,
+      title: intervention.title,
+      description: intervention.description ?? "",
+      technician: intervention.technician ?? "",
+      priority: intervention.priority,
+      scheduled_at: intervention.scheduled_at?.slice(0, 16) ?? "",
+      report: intervention.report ?? "",
+      parts_used: intervention.parts_used ?? "",
+      duration_minutes: intervention.duration_minutes,
+    });
+    setShowModal(true);
+  }
+
+  function closeModal() {
+    setShowModal(false);
+    setEditing(null);
+    setForm(EMPTY_INTERVENTION);
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (editing) {
+      updateMutation.mutate({ id: editing.id, ...form });
+    } else {
+      createMutation.mutate(form);
+    }
+  }
+
+  const filtered = useMemo(() => {
+    const list = interventions ?? [];
+    if (statusFilter === "all") return list;
+    return list.filter((i) => i.status === statusFilter);
+  }, [interventions, statusFilter]);
+
+  const stats = useMemo(() => {
+    const list = interventions ?? [];
+    return {
+      total: list.length,
+      planned: list.filter((i) => i.status === "planned").length,
+      inProgress: list.filter((i) => i.status === "in_progress").length,
+      completed: list.filter((i) => i.status === "completed").length,
+    };
+  }, [interventions]);
+
+  const inputClass = "w-full px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-4 text-xs text-foreground-muted">
+          <span>{stats.total} total</span>
+          <span className="text-blue-400">{stats.planned} planifie(s)</span>
+          <span className="text-amber-400">{stats.inProgress} en cours</span>
+          <span className="text-emerald-400">{stats.completed} termine(s)</span>
+        </div>
+        <button
+          onClick={openCreate}
+          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Nouvelle intervention
+        </button>
+      </div>
+
+      {/* Status filter */}
+      <div className="flex items-center gap-1 bg-surface border border-border rounded-xl p-1 w-fit">
+        {[
+          { key: "all", label: "Tous" },
+          { key: "planned", label: "Planifies" },
+          { key: "in_progress", label: "En cours" },
+          { key: "completed", label: "Termines" },
+          { key: "cancelled", label: "Annules" },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setStatusFilter(tab.key)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+              statusFilter === tab.key
+                ? "bg-primary/15 text-primary"
+                : "text-foreground-muted hover:text-foreground hover:bg-surface-elevated"
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* List */}
+      {isLoading ? (
+        <div className="space-y-2">
+          {[1, 2, 3].map((i) => <div key={i} className="h-20 bg-surface border border-border rounded-xl animate-pulse" />)}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48 bg-surface border border-border rounded-2xl">
+          <ClipboardList className="w-8 h-8 text-foreground-muted/40 mb-2" />
+          <p className="text-foreground-muted">Aucune intervention</p>
+          <button onClick={openCreate} className="mt-2 text-xs text-primary hover:underline">+ Planifier une intervention</button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((intervention) => {
+            const statusCfg = INTERVENTION_STATUS_CONFIG[intervention.status] ?? INTERVENTION_STATUS_CONFIG.planned;
+            return (
+              <div key={intervention.id} className="bg-surface border border-border rounded-xl p-4 hover:border-primary/20 transition-colors">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h3 className="font-medium text-foreground text-sm">{intervention.title}</h3>
+                      <span className={cn("inline-flex items-center gap-1.5 rounded-lg border px-2 py-0.5 text-[10px] font-semibold", statusCfg.bg, statusCfg.text, statusCfg.border)}>
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: statusCfg.dot }} />
+                        {statusCfg.label}
+                      </span>
+                      <span className="px-1.5 py-0.5 bg-surface-elevated text-foreground-muted text-[10px] font-semibold rounded">
+                        {INTERVENTION_TYPES.find((t) => t.value === intervention.type)?.label ?? intervention.type}
+                      </span>
+                    </div>
+                    {intervention.description && (
+                      <p className="text-xs text-foreground-muted line-clamp-1 mb-1">{intervention.description}</p>
+                    )}
+                    <div className="flex items-center gap-3 text-[10px] text-foreground-muted flex-wrap">
+                      {intervention.station_name && <span>Borne : {intervention.station_name}</span>}
+                      {intervention.technician && <span>Tech : {intervention.technician}</span>}
+                      {intervention.scheduled_at && (
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {new Date(intervention.scheduled_at).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      )}
+                      {intervention.duration_minutes && <span>{intervention.duration_minutes} min</span>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {intervention.status === "planned" && (
+                      <button
+                        onClick={() => updateMutation.mutate({ id: intervention.id, status: "in_progress" } as any)}
+                        className="px-2 py-1 text-[10px] font-medium text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg hover:bg-amber-500/20 transition-colors whitespace-nowrap"
+                      >
+                        Demarrer
+                      </button>
+                    )}
+                    {intervention.status === "in_progress" && (
+                      <button
+                        onClick={() => setShowReport(intervention)}
+                        className="px-2 py-1 text-[10px] font-medium text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-lg hover:bg-emerald-500/20 transition-colors whitespace-nowrap"
+                      >
+                        Rapport
+                      </button>
+                    )}
+                    <button
+                      onClick={() => openEdit(intervention)}
+                      className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create / Edit SlideOver */}
+      <SlideOver open={showModal} onClose={closeModal} title={editing ? "Modifier l'intervention" : "Nouvelle intervention"}>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Titre *</label>
+            <input required value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Remplacement connecteur" className={inputClass} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Description</label>
+            <textarea value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} className={cn(inputClass, "resize-none")} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Type</label>
+              <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} className={inputClass}>
+                {INTERVENTION_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Priorite</label>
+              <select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value as any }))} className={inputClass}>
+                <option value="low">Basse</option>
+                <option value="medium">Moyenne</option>
+                <option value="high">Haute</option>
+                <option value="critical">Critique</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Borne (nom)</label>
+              <input value={form.station_name} onChange={(e) => setForm((f) => ({ ...f, station_name: e.target.value }))} placeholder="EZD-001" className={inputClass} />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Technicien</label>
+              <input value={form.technician} onChange={(e) => setForm((f) => ({ ...f, technician: e.target.value }))} placeholder="Jean Dupont" className={inputClass} />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Date planifiee</label>
+            <input type="datetime-local" value={form.scheduled_at} onChange={(e) => setForm((f) => ({ ...f, scheduled_at: e.target.value }))} className={inputClass} />
+          </div>
+          {editing && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Rapport</label>
+                <textarea value={form.report} onChange={(e) => setForm((f) => ({ ...f, report: e.target.value }))} rows={3} placeholder="Rapport de l'intervention..." className={cn(inputClass, "resize-none")} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Pieces utilisees</label>
+                  <input value={form.parts_used} onChange={(e) => setForm((f) => ({ ...f, parts_used: e.target.value }))} placeholder="Connecteur Type 2, cable" className={inputClass} />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-foreground-muted mb-1.5">Duree (min)</label>
+                  <input type="number" min={0} value={form.duration_minutes ?? ""} onChange={(e) => setForm((f) => ({ ...f, duration_minutes: e.target.value ? Number(e.target.value) : null }))} className={inputClass} />
+                </div>
+              </div>
+            </>
+          )}
+          {(createMutation.error || updateMutation.error) && (
+            <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-lg text-sm text-red-400">
+              {((createMutation.error || updateMutation.error) as Error)?.message}
+            </div>
+          )}
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={closeModal} className="px-4 py-2 text-sm text-foreground-muted hover:text-foreground border border-border rounded-xl transition-colors">Annuler</button>
+            <button type="submit" disabled={createMutation.isPending || updateMutation.isPending} className="px-5 py-2 bg-primary text-background text-sm font-semibold rounded-xl hover:bg-primary/90 disabled:opacity-50 transition-colors">
+              {createMutation.isPending || updateMutation.isPending ? "..." : editing ? "Enregistrer" : "Planifier"}
+            </button>
+          </div>
+        </form>
+      </SlideOver>
+
+      {/* Report completion modal */}
+      {showReport && (
+        <ReportModal
+          intervention={showReport}
+          onClose={() => setShowReport(null)}
+          onSubmit={(report, parts, duration) => {
+            updateMutation.mutate({
+              id: showReport.id,
+              status: "completed",
+              report,
+              parts_used: parts,
+              duration_minutes: duration,
+            } as any);
+          }}
+          isLoading={updateMutation.isPending}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReportModal({ intervention, onClose, onSubmit, isLoading }: {
+  intervention: Intervention;
+  onClose: () => void;
+  onSubmit: (report: string, parts: string, duration: number | null) => void;
+  isLoading: boolean;
+}) {
+  const [report, setReport] = useState(intervention.report ?? "");
+  const [parts, setParts] = useState(intervention.parts_used ?? "");
+  const [duration, setDuration] = useState<string>(intervention.duration_minutes?.toString() ?? "");
+
+  const inputClass = "w-full px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+        <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl">
+          <div className="flex items-center justify-between p-5 border-b border-border">
+            <h2 className="font-heading font-bold text-lg">Rapport d'intervention</h2>
+            <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
+              <X className="w-5 h-5 text-foreground-muted" />
+            </button>
+          </div>
+          <div className="p-5 space-y-4">
+            <div className="bg-surface-elevated border border-border rounded-xl p-3">
+              <p className="text-sm font-medium text-foreground">{intervention.title}</p>
+              <p className="text-xs text-foreground-muted mt-0.5">{intervention.station_name ?? "Sans borne"} - {intervention.technician ?? "Non assigne"}</p>
+            </div>
+            <div>
+              <label className="block text-xs text-foreground-muted mb-1.5">Rapport *</label>
+              <textarea value={report} onChange={(e) => setReport(e.target.value)} rows={4} placeholder="Decrivez les travaux effectues..." className={cn(inputClass, "resize-none")} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Pieces utilisees</label>
+                <input value={parts} onChange={(e) => setParts(e.target.value)} placeholder="Connecteur, cable..." className={inputClass} />
+              </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Duree (minutes)</label>
+                <input type="number" min={0} value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="60" className={inputClass} />
+              </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">Annuler</button>
+              <button
+                onClick={() => onSubmit(report, parts, duration ? Number(duration) : null)}
+                disabled={isLoading || !report.trim()}
+                className="flex-1 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+              >
+                {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                Terminer l'intervention
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
 // MAIN MONITORING PAGE
 // ══════════════════════════════════════════════════════════════
 
-type MonitoringTab = "realtime" | "alerts" | "maintenance";
+type MonitoringTab = "realtime" | "alerts" | "history" | "maintenance" | "interventions";
 
 const MONITORING_TABS: { key: MonitoringTab; label: string; icon: typeof Activity }[] = [
   { key: "realtime", label: "Temps réel", icon: Activity },
   { key: "alerts", label: "Alertes", icon: Bell },
-  { key: "maintenance", label: "Maintenance & Tickets", icon: Wrench },
+  { key: "history", label: "Historique", icon: History },
+  { key: "maintenance", label: "Maintenance", icon: Wrench },
+  { key: "interventions", label: "Interventions", icon: ClipboardList },
 ];
 
 export function MonitoringPage() {
@@ -1125,6 +1777,22 @@ export function MonitoringPage() {
     );
   }
 
+  // ── History tab (Story 3) ──
+  if (activeTab === "history") {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-heading text-xl font-bold">Monitoring</h1>
+          <p className="text-sm text-foreground-muted mt-1">
+            Historique des alertes envoyées avec filtres
+          </p>
+        </div>
+        {tabBar}
+        <AlertHistoryTab />
+      </div>
+    );
+  }
+
   // ── Maintenance tab ──
   if (activeTab === "maintenance") {
     return (
@@ -1137,6 +1805,22 @@ export function MonitoringPage() {
         </div>
         {tabBar}
         <MaintenancePage />
+      </div>
+    );
+  }
+
+  // ── Interventions tab (Stories 28-30) ──
+  if (activeTab === "interventions") {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="font-heading text-xl font-bold">Monitoring</h1>
+          <p className="text-sm text-foreground-muted mt-1">
+            Gestion des interventions techniques et rapports
+          </p>
+        </div>
+        {tabBar}
+        <InterventionsTab />
       </div>
     );
   }
