@@ -9,9 +9,24 @@ import { useAuth } from "@/contexts/AuthContext";
 export function usePermissions() {
   const { profile } = useAuth();
 
+  // All available permissions — granted automatically to admin role
+  const ALL_PERMISSIONS = [
+    "stations.view", "stations.edit", "stations.delete",
+    "billing.view", "billing.edit", "billing.tariffs",
+    "customers.view", "customers.edit",
+    "ocpi.view", "ocpi.edit",
+    "admin.users", "admin.roles", "admin.settings",
+    "monitoring.view", "monitoring.edit",
+    "b2b.view", "b2b.edit",
+  ];
+
   const permissions: string[] = useMemo(() => {
+    // Admin and operator roles get all permissions regardless of admin_role config
+    if (profile?.role === "admin" || profile?.role === "operator") {
+      return ALL_PERMISSIONS;
+    }
     return profile?.admin_role?.permissions ?? [];
-  }, [profile?.admin_role?.permissions]);
+  }, [profile?.admin_role?.permissions, profile?.role]);
 
   const roleName: string = useMemo(() => {
     return profile?.admin_role?.name ?? profile?.role ?? "";
