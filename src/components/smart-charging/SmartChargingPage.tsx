@@ -27,6 +27,11 @@ import {
   FileSpreadsheet,
   Copy,
   AlertCircle,
+  Activity,
+  ArrowUpDown,
+  History,
+  Bell,
+  CheckCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -830,6 +835,18 @@ function GroupDetailView({
         </div>
       </div>
 
+      {/* ── Story 102: Real-time site consumption ── */}
+      <RealTimeConsumption groupId={group.id} evseRows={evseRows ?? []} totalCapacity={currentCapacity} />
+
+      {/* ── Story 103: EVSE priorities ── */}
+      <EvsePriorities groupId={group.id} evseRows={evseRows ?? []} />
+
+      {/* ── Story 104: Load balancing history ── */}
+      <LoadBalancingHistory groupId={group.id} />
+
+      {/* ── Story 105: Alert on capacity exceeded ── */}
+      <CapacityAlert groupId={group.id} defaultCapacity={currentCapacity} />
+
       {/* EVSE section (collapsible) */}
       <div className="bg-surface border border-border rounded-2xl overflow-hidden">
         <button
@@ -917,6 +934,388 @@ function GroupDetailView({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Story 102: Real-time site consumption
+// ══════════════════════════════════════════════════════════════
+
+function RealTimeConsumption({
+  groupId,
+  evseRows,
+  totalCapacity,
+}: {
+  groupId: string;
+  evseRows: EvseRow[];
+  totalCapacity: number;
+}) {
+  // Query active sessions / meter values for this group's EVSEs
+  const { data: meterData } = useQuery({
+    queryKey: ["smart-charging-meter-values", groupId],
+    queryFn: async () => {
+      const evseIds = evseRows.map((e) => e.id);
+      if (evseIds.length === 0) return [];
+      const { data } = await supabase
+        .from("ocpp_meter_values")
+        .select("chargepoint_id, measurand, value, timestamp")
+        .in("chargepoint_id", evseIds)
+        .eq("measurand", "Power.Active.Import")
+        .order("timestamp", { ascending: false })
+        .limit(evseIds.length);
+      return data ?? [];
+    },
+    refetchInterval: 15000,
+    enabled: evseRows.length > 0,
+  });
+
+  const perEvseConsumption = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const mv of meterData ?? []) {
+      const cpId = (mv as any).chargepoint_id;
+      if (!map[cpId]) {
+        map[cpId] = parseFloat((mv as any).value ?? "0");
+      }
+    }
+    return map;
+  }, [meterData]);
+
+  const totalKw = Object.values(perEvseConsumption).reduce((sum, v) => sum + v, 0);
+  const usagePct = totalCapacity > 0 ? Math.min(100, Math.round((totalKw / totalCapacity) * 100)) : 0;
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-emerald-400" />
+          <h2 className="text-base font-semibold text-foreground">Consommation en temps reel</h2>
+        </div>
+        <span className="text-xs text-foreground-muted">Rafraichissement: 15s</span>
+      </div>
+      <div className="p-6">
+        {/* Total bar */}
+        <div className="flex items-center gap-4 mb-4">
+          <div className="flex-1">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-sm font-medium text-foreground">Total: {totalKw.toFixed(1)} kW / {totalCapacity} kW</span>
+              <span className={cn("text-sm font-bold", usagePct > 90 ? "text-red-400" : usagePct > 70 ? "text-yellow-400" : "text-emerald-400")}>
+                {usagePct}%
+              </span>
+            </div>
+            <div className="h-3 bg-surface-elevated rounded-full overflow-hidden">
+              <div
+                className={cn("h-full rounded-full transition-all", usagePct > 90 ? "bg-red-400" : usagePct > 70 ? "bg-yellow-400" : "bg-emerald-400")}
+                style={{ width: `${usagePct}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Per-EVSE breakdown */}
+        {evseRows.length > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {evseRows.map((evse) => {
+              const kw = perEvseConsumption[evse.id] ?? 0;
+              return (
+                <div key={evse.id} className="bg-surface-elevated rounded-xl p-3">
+                  <p className="text-xs font-mono text-foreground-muted truncate">{evse.identity}</p>
+                  <p className="text-lg font-bold text-foreground mt-0.5">{kw.toFixed(1)} <span className="text-xs font-normal text-foreground-muted">kW</span></p>
+                  <span className={cn(
+                    "inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                    evse.isConnected ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
+                  )}>
+                    {evse.isConnected ? "En ligne" : "Hors ligne"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Story 103: EVSE priorities
+// ══════════════════════════════════════════════════════════════
+
+function EvsePriorities({ groupId, evseRows }: { groupId: string; evseRows: EvseRow[] }) {
+  const queryClient = useQueryClient();
+  const [collapsed, setCollapsed] = useState(true);
+
+  const { data: priorities } = useQuery({
+    queryKey: ["smart-charging-priorities", groupId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("smart_charging_group_evses")
+        .select("chargepoint_id, priority")
+        .eq("group_id", groupId);
+      const map: Record<string, number> = {};
+      for (const row of data ?? []) {
+        map[(row as any).chargepoint_id] = (row as any).priority ?? 5;
+      }
+      return map;
+    },
+  });
+
+  const updatePriority = useMutation({
+    mutationFn: async ({ chargepointId, priority }: { chargepointId: string; priority: number }) => {
+      const { error } = await supabase
+        .from("smart_charging_group_evses")
+        .update({ priority })
+        .eq("group_id", groupId)
+        .eq("chargepoint_id", chargepointId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-priorities", groupId] });
+    },
+  });
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between px-6 py-4"
+      >
+        <div className="flex items-center gap-2">
+          <ArrowUpDown className="w-4 h-4 text-primary" />
+          <h2 className="text-base font-semibold text-foreground">Priorites EVSE</h2>
+        </div>
+        {collapsed ? <ChevronDown className="w-5 h-5 text-foreground-muted" /> : <ChevronUp className="w-5 h-5 text-foreground-muted" />}
+      </button>
+      {!collapsed && (
+        <div className="px-6 pb-6">
+          <p className="text-xs text-foreground-muted mb-4">Priorite de 1 (basse) a 10 (haute). Les EVSE avec priorite elevee seront les derniers a etre reduits.</p>
+          <div className="space-y-2">
+            {evseRows.map((evse) => {
+              const priority = priorities?.[evse.id] ?? 5;
+              return (
+                <div key={evse.id} className="flex items-center gap-3 bg-surface-elevated rounded-xl px-4 py-2.5">
+                  <span className="text-sm font-mono text-foreground flex-1 truncate">{evse.identity}</span>
+                  <span className={cn("text-xs font-semibold px-1.5 py-0.5 rounded",
+                    evse.isConnected ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
+                  )}>
+                    {evse.isConnected ? "En ligne" : "Hors ligne"}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-foreground-muted">Priorite:</span>
+                    <select
+                      value={priority}
+                      onChange={(e) => updatePriority.mutate({ chargepointId: evse.id, priority: parseInt(e.target.value) })}
+                      className="bg-surface border border-border rounded-lg px-2 py-1 text-sm font-medium text-foreground focus:outline-none focus:border-primary/50 w-16"
+                    >
+                      {Array.from({ length: 10 }, (_, i) => i + 1).map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              );
+            })}
+            {evseRows.length === 0 && (
+              <p className="text-sm text-foreground-muted text-center py-4">Aucun EVSE dans ce groupe</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Story 104: Load balancing history
+// ══════════════════════════════════════════════════════════════
+
+function LoadBalancingHistory({ groupId }: { groupId: string }) {
+  const [collapsed, setCollapsed] = useState(true);
+
+  const { data: events, isLoading } = useQuery({
+    queryKey: ["smart-charging-history", groupId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("smart_charging_events")
+        .select("id, created_at, event_type, chargepoint_identity, power_before_kw, power_after_kw, reason")
+        .eq("group_id", groupId)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (error) return [];
+      return data ?? [];
+    },
+  });
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <button
+        onClick={() => setCollapsed(!collapsed)}
+        className="w-full flex items-center justify-between px-6 py-4"
+      >
+        <div className="flex items-center gap-2">
+          <History className="w-4 h-4 text-primary" />
+          <h2 className="text-base font-semibold text-foreground">Historique d'equilibrage de charge</h2>
+          {(events ?? []).length > 0 && (
+            <span className="px-2 py-0.5 bg-primary/10 text-primary text-xs font-medium rounded-full">{events!.length}</span>
+          )}
+        </div>
+        {collapsed ? <ChevronDown className="w-5 h-5 text-foreground-muted" /> : <ChevronUp className="w-5 h-5 text-foreground-muted" />}
+      </button>
+      {!collapsed && (
+        <div className="px-6 pb-6">
+          {isLoading ? (
+            <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-foreground-muted" /></div>
+          ) : (events ?? []).length === 0 ? (
+            <p className="text-sm text-foreground-muted text-center py-8">Aucun evenement de reduction de charge enregistre</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Date</th>
+                    <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">EVSE</th>
+                    <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Type</th>
+                    <th className="text-right py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Avant</th>
+                    <th className="text-right py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Apres</th>
+                    <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Raison</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(events ?? []).map((ev: any) => (
+                    <tr key={ev.id} className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors">
+                      <td className="px-3 py-2 text-foreground-muted text-xs whitespace-nowrap">
+                        {new Date(ev.created_at).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </td>
+                      <td className="px-3 py-2 text-foreground font-mono text-xs">{ev.chargepoint_identity ?? "\u2014"}</td>
+                      <td className="px-3 py-2">
+                        <span className={cn("px-2 py-0.5 rounded text-xs font-medium",
+                          ev.event_type === "curtailment" ? "bg-yellow-500/15 text-yellow-400" :
+                          ev.event_type === "restore" ? "bg-emerald-500/15 text-emerald-400" :
+                          "bg-foreground-muted/10 text-foreground-muted"
+                        )}>
+                          {ev.event_type === "curtailment" ? "Reduction" : ev.event_type === "restore" ? "Restauration" : ev.event_type}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right text-foreground">{ev.power_before_kw ?? "\u2014"} kW</td>
+                      <td className="px-3 py-2 text-right text-foreground">{ev.power_after_kw ?? "\u2014"} kW</td>
+                      <td className="px-3 py-2 text-foreground-muted text-xs">{ev.reason ?? "\u2014"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Story 105: Alert on capacity exceeded
+// ══════════════════════════════════════════════════════════════
+
+function CapacityAlert({ groupId, defaultCapacity }: { groupId: string; defaultCapacity: number }) {
+  const queryClient = useQueryClient();
+
+  const { data: alertConfig } = useQuery({
+    queryKey: ["smart-charging-alert", groupId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("smart_charging_groups")
+        .select("alert_on_exceeded, alert_threshold_kw")
+        .eq("id", groupId)
+        .maybeSingle();
+      return {
+        enabled: (data as any)?.alert_on_exceeded ?? false,
+        threshold: (data as any)?.alert_threshold_kw ?? defaultCapacity,
+      };
+    },
+  });
+
+  const [enabled, setEnabled] = useState(false);
+  const [threshold, setThreshold] = useState(String(defaultCapacity));
+  const [saved, setSaved] = useState(false);
+
+  // Sync
+  useEffect(() => {
+    if (alertConfig) {
+      setEnabled(alertConfig.enabled);
+      setThreshold(String(alertConfig.threshold));
+    }
+  }, [alertConfig]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("smart_charging_groups")
+        .update({
+          alert_on_exceeded: enabled,
+          alert_threshold_kw: parseFloat(threshold) || defaultCapacity,
+        })
+        .eq("id", groupId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-alert", groupId] });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    },
+  });
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Bell className="w-4 h-4 text-yellow-400" />
+          <h2 className="text-base font-semibold text-foreground">Alerte de depassement de capacite</h2>
+        </div>
+        <button
+          onClick={() => setEnabled(!enabled)}
+          className={cn(
+            "relative w-11 h-6 rounded-full transition-colors shrink-0",
+            enabled ? "bg-primary" : "bg-surface-elevated border border-border"
+          )}
+        >
+          <span className={cn(
+            "absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform",
+            enabled ? "translate-x-5.5" : "translate-x-0.5"
+          )} />
+        </button>
+      </div>
+
+      {enabled && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-foreground-muted mb-1.5">Seuil de capacite (kW)</label>
+            <div className="relative w-48">
+              <Zap className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+              <input
+                type="number"
+                value={threshold}
+                onChange={(e) => setThreshold(e.target.value)}
+                className="w-full pl-9 pr-10 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-primary/50"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-foreground-muted">kW</span>
+            </div>
+            <p className="text-xs text-foreground-muted mt-1.5">
+              Une alerte sera envoyee si la consommation du groupe depasse {threshold} kW.
+            </p>
+          </div>
+          <button
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending}
+            className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : saved ? <CheckCircle className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+            {saved ? "Sauvegarde !" : "Enregistrer"}
+          </button>
+        </div>
+      )}
+
+      {!enabled && (
+        <p className="text-xs text-foreground-muted">Activez pour recevoir une alerte lorsque la consommation du groupe depasse un seuil.</p>
+      )}
     </div>
   );
 }
