@@ -83,6 +83,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         await handlePaymentIntentFailed(event.data.object);
         break;
 
+      case "charge.refunded":
+        await handleChargeRefunded(event.data.object);
+        break;
+
       default:
         console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
     }
@@ -271,6 +275,27 @@ async function handlePaymentIntentSucceeded(paymentIntent: Record<string, unknow
       payment_method: "stripe",
     }).eq("gfx_cdr_id", sessionId);
   }
+
+  // ── Prepaid token recharge ──
+  const tokenUid = metadata?.token_uid;
+  const paymentType = metadata?.type;
+  if (tokenUid && paymentType === "prepaid_recharge") {
+    const amountReceived = (paymentIntent.amount_received as number) ?? (paymentIntent.amount as number) ?? 0;
+    const rechargeAmount = amountReceived / 100; // Stripe amounts are in cents
+
+    console.log(`[Stripe] Prepaid recharge for token ${tokenUid}: +${rechargeAmount}€`);
+
+    const { data: result, error: rpcError } = await db.rpc("reactivate_prepaid_token", {
+      p_token_uid: tokenUid,
+      p_recharge_amount: rechargeAmount,
+    });
+
+    if (rpcError) {
+      console.error(`[Stripe] Failed to reactivate prepaid token ${tokenUid}:`, rpcError);
+    } else {
+      console.log(`[Stripe] Prepaid token reactivated:`, result);
+    }
+  }
 }
 
 async function handlePaymentIntentFailed(paymentIntent: Record<string, unknown>): Promise<void> {
@@ -309,6 +334,37 @@ async function handlePaymentIntentFailed(paymentIntent: Record<string, unknown>)
     }).eq("id", transactionId);
 
     console.log(`[Stripe] CDR/Transaction ${transactionId} marked as failed`);
+  }
+}
+
+// ─── Charge Refunded (Prepaid deduction) ────────────────────
+
+async function handleChargeRefunded(charge: Record<string, unknown>): Promise<void> {
+  const db = getDb();
+  const chargeId = charge.id as string;
+  const metadata = charge.metadata as Record<string, string> | undefined;
+  const tokenUid = metadata?.token_uid;
+
+  if (!tokenUid) {
+    console.log(`[Stripe] Charge refunded ${chargeId} — no token_uid in metadata, skipping prepaid deduction`);
+    return;
+  }
+
+  // Calculate refund amount (amount_refunded is in cents)
+  const amountRefunded = (charge.amount_refunded as number) ?? 0;
+  const refundAmount = amountRefunded / 100;
+
+  console.log(`[Stripe] Charge refunded for token ${tokenUid}: -${refundAmount}€`);
+
+  const { data: result, error: rpcError } = await db.rpc("deduct_prepaid_balance", {
+    p_token_uid: tokenUid,
+    p_session_cost: refundAmount,
+  });
+
+  if (rpcError) {
+    console.error(`[Stripe] Failed to deduct prepaid balance for ${tokenUid}:`, rpcError);
+  } else {
+    console.log(`[Stripe] Prepaid balance deducted:`, result);
   }
 }
 

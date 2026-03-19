@@ -31,6 +31,8 @@ import {
   Calendar,
   FileText,
   Loader2,
+  Wallet,
+  RefreshCw,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -54,6 +56,21 @@ interface Token {
   emsp: string | null;
   emsp_contract: string | null;
   source: string | null;
+}
+
+interface TokenBilling {
+  id: string;
+  token_uid: string;
+  billing_type: "prepaid" | "postpaid";
+  prepaid_amount: number | null;
+  prepaid_balance: number | null;
+  roaming_enabled: boolean;
+  roaming_fee: number | null;
+  roaming_interval: string | null;
+  expires_at: string | null;
+  remarks: string | null;
+  auto_disabled_at: string | null;
+  auto_reactivated_at: string | null;
 }
 
 const TABS = ["Tous", "Actifs", "Inactifs"] as const;
@@ -424,6 +441,44 @@ function TokenDetailDrawer({ token, onClose }: { token: Token; onClose: () => vo
     ? Date.now() - new Date(token.last_used_at).getTime() < 90 * 86400000
     : false;
 
+  const [showRecharge, setShowRecharge] = useState(false);
+  const [rechargeAmount, setRechargeAmount] = useState(50);
+  const queryClient = useQueryClient();
+
+  // Query billing info for this token
+  const { data: billing, isLoading: billingLoading } = useQuery<TokenBilling | null>({
+    queryKey: ["token-billing", token.token_uid],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("token_billing")
+        .select("*")
+        .eq("token_uid", token.token_uid)
+        .maybeSingle();
+      if (error) {
+        console.warn("token_billing query:", error.message);
+        return null;
+      }
+      return data as TokenBilling | null;
+    },
+  });
+
+  // Recharge mutation (manual balance top-up from admin)
+  const rechargeMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.rpc("reactivate_prepaid_token", {
+        p_token_uid: token.token_uid,
+        p_recharge_amount: rechargeAmount,
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["token-billing", token.token_uid] });
+      queryClient.invalidateQueries({ queryKey: ["gfx-tokens"] });
+      setShowRecharge(false);
+    },
+  });
+
   return (
     <>
       <div className="fixed inset-0 bg-black/40 z-40" onClick={onClose} />
@@ -487,6 +542,122 @@ function TokenDetailDrawer({ token, onClose }: { token: Token; onClose: () => vo
             <DetailItem label="eMSP" value={token.emsp ?? "—"} />
             <DetailItem label="Contrat eMSP" value={token.emsp_contract ?? "—"} />
           </div>
+
+          {/* Facturation */}
+          {billingLoading ? (
+            <div className="animate-pulse h-24 bg-surface-elevated rounded-xl" />
+          ) : billing ? (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Facturation</p>
+              <DetailItem
+                label="Type"
+                value={billing.billing_type === "prepaid" ? "Prépayé" : "Postpaid"}
+              />
+              {billing.billing_type === "prepaid" && (
+                <>
+                  <div className="flex items-center justify-between text-sm py-1.5 border-b border-border/50">
+                    <span className="text-foreground-muted">Solde prépayé</span>
+                    <span className={cn(
+                      "font-bold text-right font-mono text-sm",
+                      (billing.prepaid_balance ?? 0) <= 0 ? "text-red-400" : "text-emerald-400"
+                    )}>
+                      {(billing.prepaid_balance ?? 0).toFixed(2)} €
+                    </span>
+                  </div>
+                  <DetailItem
+                    label="Montant initial"
+                    value={`${(billing.prepaid_amount ?? 0).toFixed(2)} €`}
+                  />
+                  {billing.auto_disabled_at && (
+                    <div className="flex items-center justify-between text-sm py-1.5 border-b border-border/50">
+                      <span className="text-foreground-muted">Auto-désactivé</span>
+                      <span className="text-red-400 text-xs font-medium">
+                        {formatDate(billing.auto_disabled_at)}
+                      </span>
+                    </div>
+                  )}
+                  {billing.auto_reactivated_at && (
+                    <div className="flex items-center justify-between text-sm py-1.5 border-b border-border/50">
+                      <span className="text-foreground-muted">Dernière recharge</span>
+                      <span className="text-emerald-400 text-xs font-medium">
+                        {formatDate(billing.auto_reactivated_at)}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Recharge button */}
+                  {!showRecharge ? (
+                    <button
+                      onClick={() => setShowRecharge(true)}
+                      className="w-full mt-2 flex items-center justify-center gap-2 px-4 py-2.5 bg-primary/10 text-primary border border-primary/20 rounded-xl text-sm font-medium hover:bg-primary/20 transition-colors"
+                    >
+                      <Wallet className="w-4 h-4" />
+                      Recharger
+                    </button>
+                  ) : (
+                    <div className="mt-2 p-3 bg-surface-elevated border border-border rounded-xl space-y-3">
+                      <label className="block text-xs font-medium text-foreground-muted">Montant de recharge (€)</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={rechargeAmount}
+                          onChange={(e) => setRechargeAmount(Number(e.target.value))}
+                          className="flex-1 px-3 py-2 bg-surface border border-border rounded-lg text-sm text-foreground font-mono focus:outline-none focus:border-border-focus"
+                        />
+                        <span className="text-sm text-foreground-muted">€</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowRecharge(false)}
+                          className="flex-1 px-3 py-2 text-sm text-foreground-muted hover:text-foreground transition-colors"
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          onClick={() => rechargeMutation.mutate()}
+                          disabled={rechargeMutation.isPending || rechargeAmount <= 0}
+                          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                          {rechargeMutation.isPending ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-3.5 h-3.5" />
+                          )}
+                          Confirmer
+                        </button>
+                      </div>
+                      {rechargeMutation.isError && (
+                        <p className="text-xs text-red-400">
+                          {(rechargeMutation.error as Error)?.message ?? "Erreur"}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+              <DetailItem
+                label="Itinérance"
+                value={billing.roaming_enabled ? "Activée" : "Désactivée"}
+              />
+              {billing.roaming_enabled && billing.roaming_fee && Number(billing.roaming_fee) > 0 && (
+                <DetailItem
+                  label="Frais itinérance"
+                  value={`${Number(billing.roaming_fee).toFixed(2)} € / ${billing.roaming_interval === "yearly" ? "an" : "mois"}`}
+                />
+              )}
+              {billing.expires_at && (
+                <DetailItem
+                  label="Expiration"
+                  value={formatDate(billing.expires_at)}
+                />
+              )}
+              {billing.remarks && (
+                <DetailItem label="Remarques" value={billing.remarks} />
+              )}
+            </div>
+          ) : null}
 
           {/* Dates */}
           <div className="space-y-2">
