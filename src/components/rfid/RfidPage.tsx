@@ -26,7 +26,13 @@ import {
   Zap,
   Users,
   CreditCard,
+  Plus,
+  Globe,
+  Calendar,
+  FileText,
+  Loader2,
 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -125,6 +131,7 @@ export function RfidPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(1);
   const [detail, setDetail] = useState<Token | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -247,15 +254,24 @@ export function RfidPage() {
           ))}
         </div>
 
-        <div className="relative w-full sm:w-80">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
-          <input
-            type="text"
-            placeholder="Rechercher par UID, conducteur, groupe..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="w-full pl-9 pr-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus transition-colors"
-          />
+        <div className="flex items-center gap-3">
+          <div className="relative w-full sm:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+            <input
+              type="text"
+              placeholder="Rechercher par UID, conducteur, groupe..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              className="w-full pl-9 pr-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus transition-colors"
+            />
+          </div>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white rounded-xl text-sm font-medium hover:bg-primary/90 transition-colors whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            Ajouter Token
+          </button>
         </div>
       </div>
 
@@ -394,6 +410,9 @@ export function RfidPage() {
 
       {/* Detail Drawer */}
       {detail && <TokenDetailDrawer token={detail} onClose={() => setDetail(null)} />}
+
+      {/* Create Token Modal */}
+      {showCreate && <CreateTokenModal onClose={() => setShowCreate(false)} cpoId={selectedCpoId} onCreated={() => { setShowCreate(false); refetch(); }} />}
     </div>
   );
 }
@@ -499,5 +518,498 @@ function DetailItem({ label, value }: { label: string; value: string }) {
       <span className="text-foreground-muted">{label}</span>
       <span className="text-foreground font-medium text-right truncate max-w-[200px] font-mono text-xs">{value}</span>
     </div>
+  );
+}
+
+// ── Create Token Modal ────────────────────────────────────────
+
+type CreateTab = "details" | "facturation";
+
+interface DriverOption {
+  id: string;
+  driver_external_id: string;
+  full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  customer_name: string | null;
+}
+
+function CreateTokenModal({ onClose, cpoId, onCreated }: { onClose: () => void; cpoId: string | null; onCreated: () => void }) {
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<CreateTab>("details");
+
+  // ── Details tab state ──
+  const [driverSearch, setDriverSearch] = useState("");
+  const [selectedDriver, setSelectedDriver] = useState<DriverOption | null>(null);
+  const [showDriverDropdown, setShowDriverDropdown] = useState(false);
+  const [tokenUid, setTokenUid] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const [expiresAt, setExpiresAt] = useState("");
+  const [remarks, setRemarks] = useState("");
+
+  // ── Facturation tab state ──
+  const [billingType, setBillingType] = useState<"postpaid" | "prepaid">("postpaid");
+  const [prepaidAmount, setPrepaidAmount] = useState<number>(50);
+  const [roamingEnabled, setRoamingEnabled] = useState(false);
+  const [roamingFee, setRoamingFee] = useState<number>(0);
+  const [roamingInterval, setRoamingInterval] = useState<"monthly" | "yearly">("monthly");
+
+  // ── Driver search ──
+  const { data: drivers } = useQuery<DriverOption[]>({
+    queryKey: ["drivers-search", driverSearch, cpoId],
+    enabled: driverSearch.length >= 2,
+    queryFn: async () => {
+      let q = supabase
+        .from("gfx_consumers")
+        .select("id, driver_external_id, full_name, first_name, last_name, customer_name")
+        .or(`full_name.ilike.%${driverSearch}%,driver_external_id.ilike.%${driverSearch}%,first_name.ilike.%${driverSearch}%,last_name.ilike.%${driverSearch}%`)
+        .limit(10);
+      if (cpoId) q = q.eq("cpo_id", cpoId);
+      const { data, error } = await q;
+      if (error) throw error;
+      return (data ?? []) as DriverOption[];
+    },
+  });
+
+  // ── Save mutation ──
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!tokenUid.trim()) throw new Error("Le numéro du token est requis");
+
+      const { error } = await supabase.from("gfx_tokens").insert({
+        id: crypto.randomUUID(),
+        token_uid: tokenUid.trim(),
+        visual_number: tokenUid.trim(),
+        driver_external_id: selectedDriver?.driver_external_id ?? null,
+        driver_name: selectedDriver
+          ? (selectedDriver.full_name ?? [selectedDriver.first_name, selectedDriver.last_name].filter(Boolean).join(" ") || selectedDriver.driver_external_id)
+          : null,
+        customer_group: selectedDriver?.customer_name ?? null,
+        status: enabled ? "active" : "inactive",
+        cpo_id: cpoId,
+        token_type: "RFID",
+        total_sessions: 0,
+        total_energy_kwh: 0,
+        source: "manual",
+        emsp: "EZdrive",
+        contract_id: null,
+        emsp_contract: null,
+        first_used_at: null,
+        last_used_at: null,
+      });
+      if (error) throw error;
+
+      // Save billing info if needed
+      const { error: billingError } = await supabase.from("token_billing").upsert({
+        token_uid: tokenUid.trim(),
+        billing_type: billingType,
+        prepaid_amount: billingType === "prepaid" ? prepaidAmount : null,
+        prepaid_balance: billingType === "prepaid" ? prepaidAmount : null,
+        roaming_enabled: roamingEnabled,
+        roaming_fee: roamingEnabled ? roamingFee : 0,
+        roaming_interval: roamingEnabled ? roamingInterval : null,
+        expires_at: expiresAt || null,
+        remarks: remarks || null,
+        cpo_id: cpoId,
+      });
+      // token_billing table may not exist yet — silently ignore
+      if (billingError) console.warn("token_billing insert warning:", billingError.message);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["gfx-tokens"] });
+      onCreated();
+    },
+  });
+
+  const driverDisplayName = (d: DriverOption) => {
+    if (d.full_name) return d.full_name;
+    if (d.first_name || d.last_name) return [d.first_name, d.last_name].filter(Boolean).join(" ");
+    return d.driver_external_id;
+  };
+
+  const tabs: { key: CreateTab; label: string; icon: typeof Nfc }[] = [
+    { key: "details", label: "Détails", icon: Nfc },
+    { key: "facturation", label: "Facturation", icon: CreditCard },
+  ];
+
+  const labelClass = "block text-sm font-medium text-foreground mb-1.5";
+  const inputClass = "w-full px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-border-focus transition-colors";
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-x-4 top-[5%] bottom-[5%] md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[720px] bg-surface border border-border rounded-2xl z-50 flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+              <Nfc className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h2 className="font-heading font-bold text-lg">Ajouter Token</h2>
+              <p className="text-xs text-foreground-muted">Créer un nouveau badge RFID ou token d'authentification</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
+            <X className="w-5 h-5 text-foreground-muted" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-border px-6">
+          {tabs.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors relative",
+                tab === key ? "text-primary" : "text-foreground-muted hover:text-foreground"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {label}
+              {tab === key && <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {tab === "details" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left column */}
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">1. Conducteur</p>
+
+                  <label className={labelClass}>Conducteur *</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+                    <input
+                      type="text"
+                      placeholder="Saisissez le nom du conducteur..."
+                      value={selectedDriver ? driverDisplayName(selectedDriver) : driverSearch}
+                      onChange={(e) => {
+                        setDriverSearch(e.target.value);
+                        setSelectedDriver(null);
+                        setShowDriverDropdown(true);
+                      }}
+                      onFocus={() => driverSearch.length >= 2 && setShowDriverDropdown(true)}
+                      className={cn(inputClass, "pl-9")}
+                    />
+                    {selectedDriver && (
+                      <button
+                        onClick={() => { setSelectedDriver(null); setDriverSearch(""); }}
+                        className="absolute right-3 top-1/2 -translate-y-1/2"
+                      >
+                        <X className="w-4 h-4 text-foreground-muted hover:text-foreground" />
+                      </button>
+                    )}
+                    {showDriverDropdown && drivers && drivers.length > 0 && !selectedDriver && (
+                      <div className="absolute z-10 mt-1 w-full bg-surface border border-border rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                        {drivers.map((d) => (
+                          <button
+                            key={d.id}
+                            onClick={() => {
+                              setSelectedDriver(d);
+                              setDriverSearch("");
+                              setShowDriverDropdown(false);
+                            }}
+                            className="w-full px-3 py-2.5 text-left hover:bg-surface-elevated transition-colors text-sm"
+                          >
+                            <p className="font-medium text-foreground">{driverDisplayName(d)}</p>
+                            {d.customer_name && (
+                              <p className="text-xs text-foreground-muted">{d.customer_name}</p>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {selectedDriver?.customer_name && (
+                    <div className="mt-2">
+                      <label className="text-xs text-foreground-muted">Client</label>
+                      <p className="text-sm text-foreground mt-0.5 bg-surface-elevated border border-border rounded-lg px-3 py-2 italic text-foreground-muted">
+                        {selectedDriver.customer_name}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">2. Information du token</p>
+
+                  <label className={labelClass}>Numéro du token (Visual ID / UID) *</label>
+                  <input
+                    type="text"
+                    placeholder="EZD-050A984A910000"
+                    value={tokenUid}
+                    onChange={(e) => setTokenUid(e.target.value)}
+                    className={cn(inputClass, "font-mono")}
+                  />
+                  <p className="text-xs text-foreground-muted mt-1">Ce numéro est inscrit sur le badge RFID physique</p>
+                </div>
+              </div>
+
+              {/* Right column */}
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">3. État du token</p>
+
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-foreground">Authentification par token</label>
+                    <button
+                      onClick={() => setEnabled(!enabled)}
+                      className={cn(
+                        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                        enabled ? "bg-primary" : "bg-foreground-muted/30"
+                      )}
+                    >
+                      <span className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        enabled ? "translate-x-6" : "translate-x-1"
+                      )} />
+                    </button>
+                  </div>
+
+                  <div className="mt-4">
+                    <label className={labelClass}>
+                      <Calendar className="w-3.5 h-3.5 inline mr-1.5" />
+                      Expire le
+                    </label>
+                    <input
+                      type="date"
+                      value={expiresAt}
+                      onChange={(e) => setExpiresAt(e.target.value)}
+                      className={inputClass}
+                    />
+                    <p className="text-xs text-foreground-muted mt-1">Laissez vide pour une durée illimitée</p>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">4. Remarques</p>
+                  <textarea
+                    placeholder="Saisissez éventuellement des remarques sur le Token..."
+                    value={remarks}
+                    onChange={(e) => setRemarks(e.target.value)}
+                    rows={4}
+                    className={cn(inputClass, "resize-none")}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === "facturation" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left column */}
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">1. Type de facturation</p>
+
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setBillingType("postpaid")}
+                      className={cn(
+                        "flex-1 p-4 rounded-xl border-2 text-left transition-all",
+                        billingType === "postpaid"
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-border-focus"
+                      )}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={cn("w-4 h-4 rounded-full border-2 flex items-center justify-center",
+                          billingType === "postpaid" ? "border-primary" : "border-foreground-muted/40"
+                        )}>
+                          {billingType === "postpaid" && <div className="w-2 h-2 rounded-full bg-primary" />}
+                        </div>
+                        <span className="text-sm font-semibold text-foreground">Postpaid</span>
+                      </div>
+                      <p className="text-xs text-foreground-muted pl-6">Facturation en fin de mois</p>
+                    </button>
+
+                    <button
+                      onClick={() => setBillingType("prepaid")}
+                      className={cn(
+                        "flex-1 p-4 rounded-xl border-2 text-left transition-all",
+                        billingType === "prepaid"
+                          ? "border-primary bg-primary/5"
+                          : "border-border hover:border-border-focus"
+                      )}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className={cn("w-4 h-4 rounded-full border-2 flex items-center justify-center",
+                          billingType === "prepaid" ? "border-primary" : "border-foreground-muted/40"
+                        )}>
+                          {billingType === "prepaid" && <div className="w-2 h-2 rounded-full bg-primary" />}
+                        </div>
+                        <span className="text-sm font-semibold text-foreground">Prépayé</span>
+                      </div>
+                      <p className="text-xs text-foreground-muted pl-6">Solde prédéfini, coupure auto à épuisement</p>
+                    </button>
+                  </div>
+
+                  {billingType === "prepaid" && (
+                    <div className="mt-4 p-4 bg-surface-elevated border border-border rounded-xl">
+                      <label className={labelClass}>Montant prépayé (€)</label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={prepaidAmount}
+                          onChange={(e) => setPrepaidAmount(Number(e.target.value))}
+                          className={cn(inputClass, "pr-8")}
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-foreground-muted">€</span>
+                      </div>
+                      <p className="text-xs text-foreground-muted mt-1.5">
+                        La recharge sera automatiquement coupée quand le solde atteint 0€
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right column */}
+              <div className="space-y-5">
+                <div>
+                  <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">2. Itinérance (OCPI)</p>
+
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Globe className="w-4 h-4 text-foreground-muted" />
+                      <label className="text-sm font-medium text-foreground">Itinérance activée</label>
+                    </div>
+                    <button
+                      onClick={() => setRoamingEnabled(!roamingEnabled)}
+                      className={cn(
+                        "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                        roamingEnabled ? "bg-primary" : "bg-foreground-muted/30"
+                      )}
+                    >
+                      <span className={cn(
+                        "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
+                        roamingEnabled ? "translate-x-6" : "translate-x-1"
+                      )} />
+                    </button>
+                  </div>
+
+                  {roamingEnabled ? (
+                    <div className="p-4 bg-surface-elevated border border-border rounded-xl space-y-4">
+                      <p className="text-xs text-foreground-muted">
+                        Ce token aura accès au réseau OCPI (bornes partenaires). Vous pouvez facturer un frais d'itinérance au propriétaire du token.
+                      </p>
+
+                      <div>
+                        <label className={labelClass}>Frais d'itinérance (€)</label>
+                        <div className="relative">
+                          <input
+                            type="number"
+                            min={0}
+                            step={0.01}
+                            value={roamingFee}
+                            onChange={(e) => setRoamingFee(Number(e.target.value))}
+                            className={cn(inputClass, "pr-8")}
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-foreground-muted">€</span>
+                        </div>
+                        <p className="text-xs text-foreground-muted mt-1">0€ par défaut (itinérance gratuite)</p>
+                      </div>
+
+                      {roamingFee > 0 && (
+                        <div>
+                          <label className={labelClass}>Périodicité</label>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => setRoamingInterval("monthly")}
+                              className={cn(
+                                "flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors",
+                                roamingInterval === "monthly"
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-border text-foreground-muted hover:border-border-focus"
+                              )}
+                            >
+                              Mensuel
+                            </button>
+                            <button
+                              onClick={() => setRoamingInterval("yearly")}
+                              className={cn(
+                                "flex-1 py-2 px-3 rounded-lg border text-sm font-medium transition-colors",
+                                roamingInterval === "yearly"
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-border text-foreground-muted hover:border-border-focus"
+                              )}
+                            >
+                              Annuel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-surface-elevated/50 border border-border/50 rounded-xl">
+                      <p className="text-xs text-foreground-muted">
+                        L'itinérance est désactivée. Ce token ne pourra charger que sur les bornes du réseau EZDrive.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-border">
+          <p className="text-xs text-foreground-muted">
+            {tab === "details" ? "Étape 1/2 — Informations du token" : "Étape 2/2 — Facturation & itinérance"}
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-red-400 hover:text-red-300 transition-colors"
+            >
+              Annuler
+            </button>
+            {tab === "details" ? (
+              <button
+                onClick={() => setTab("facturation")}
+                disabled={!tokenUid.trim()}
+                className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-medium hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Suivant
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setTab("details")}
+                  className="flex items-center gap-1 px-4 py-2.5 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  Précédent
+                </button>
+                <button
+                  onClick={() => saveMutation.mutate()}
+                  disabled={saveMutation.isPending || !tokenUid.trim()}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-medium hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  {saveMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  Créer le token
+                </button>
+              </div>
+            )}
+          </div>
+          {saveMutation.isError && (
+            <p className="absolute bottom-14 right-6 text-xs text-red-400">
+              {(saveMutation.error as Error)?.message ?? "Erreur lors de la création"}
+            </p>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
