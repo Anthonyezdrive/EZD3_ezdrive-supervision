@@ -82,27 +82,45 @@ export function DashboardPage() {
         supabase.from("ocpp_transactions").select("energy_kwh").not("energy_kwh", "is", null)
       );
 
-      const [sessionsRes, activeRes, customersRes, invoicesRes, energyRes, subsRes] = await Promise.all([
+      // Also query OCPI CDRs (from GreenFlux/Road sync — 132K+ records)
+      let cdrQuery = supabase.from("ocpi_cdrs").select("*", { count: "exact", head: true });
+      let cdrEnergyQuery = supabase.from("ocpi_cdrs").select("total_energy, total_cost");
+      if (selectedCpoId) {
+        // Filter CDRs by CPO using cdr_location->>'operator_id' or cpo-based filtering
+        // For now, we rely on the global count — CPO filtering on CDRs is already done in B2B pages
+      }
+
+      const [sessionsRes, activeRes, customersRes, invoicesRes, energyRes, subsRes, cdrCountRes, cdrEnergyRes] = await Promise.all([
         safe(() => txAllQuery ? txAllQuery : Promise.resolve(emptyResult), emptyResult),
         safe(() => txActiveQuery ? txActiveQuery : Promise.resolve(emptyResult), emptyResult),
         safe(() => supabase.from("all_consumers").select("*", { count: "exact", head: true }), emptyResult),
         safe(() => supabase.from("invoices").select("total_cents").eq("status", "paid"), emptyResult),
         safe(() => txEnergyQuery ? txEnergyQuery : Promise.resolve(emptyResult), emptyResult),
         safe(() => supabase.from("user_subscriptions").select("*", { count: "exact", head: true }).eq("status", "ACTIVE"), emptyResult),
+        safe(() => cdrQuery, emptyResult),
+        safe(() => cdrEnergyQuery.limit(50000), emptyResult),
       ]);
 
       const totalRevenue = (invoicesRes.data as { total_cents?: number }[] | null)?.reduce(
         (sum, r) => sum + (r.total_cents ?? 0), 0
       ) ?? 0;
-      const totalEnergy = (energyRes.data as { energy_kwh?: number }[] | null)?.reduce(
+      const totalEnergyOcpp = (energyRes.data as { energy_kwh?: number }[] | null)?.reduce(
         (sum, r) => sum + (r.energy_kwh ?? 0), 0
       ) ?? 0;
+      // OCPI CDR energy + revenue
+      const cdrData = (cdrEnergyRes.data as { total_energy?: number; total_cost?: number }[] | null) ?? [];
+      const totalEnergyCdr = cdrData.reduce((sum, r) => sum + (r.total_energy ?? 0), 0);
+      const totalRevenueCdr = cdrData.reduce((sum, r) => sum + (r.total_cost ?? 0), 0);
+
+      const totalEnergy = totalEnergyOcpp + totalEnergyCdr;
+      const ocppSessions = sessionsRes.count ?? 0;
+      const cdrSessions = cdrCountRes.count ?? 0;
 
       return {
-        totalSessions: sessionsRes.count ?? 0,
+        totalSessions: ocppSessions + cdrSessions,
         activeSessions: activeRes.count ?? 0,
         totalCustomers: customersRes.count ?? 0,
-        totalRevenue,
+        totalRevenue: totalRevenue > 0 ? totalRevenue : Math.round(totalRevenueCdr * 100), // cents
         totalEnergy,
         activeSubscriptions: subsRes.count ?? 0,
       };

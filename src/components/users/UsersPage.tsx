@@ -25,6 +25,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { apiPost } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useTerritories } from "@/hooks/useTerritories";
 import { KPICard } from "@/components/ui/KPICard";
 import { KPISkeleton, TableSkeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
@@ -94,7 +95,8 @@ const ROLE_CONFIG: Record<
 
 const ROLES = ["admin", "operator", "tech", "viewer", "b2b_client"] as const;
 
-const TERRITORIES = [
+// TERRITORIES — fallback, overridden by DB data in UsersPage component
+const TERRITORIES_FALLBACK = [
   "Guadeloupe",
   "Martinique",
   "Guyane",
@@ -103,7 +105,10 @@ const TERRITORIES = [
   "Saint-Martin",
   "Saint-Barthelemy",
   "Metropole",
-] as const;
+];
+
+// Mutable ref shared across sub-components — set from DB in UsersPage
+let TERRITORIES: string[] = [...TERRITORIES_FALLBACK];
 
 // ── Query ──────────────────────────────────────────────────
 
@@ -1356,6 +1361,11 @@ export function UsersPage() {
   const { data: users, isLoading, isError, refetch } = useEzdriveUsers();
   const { cpos } = useCpo();
   const queryClient = useQueryClient();
+  const { data: dbTerritories } = useTerritories();
+  // Update shared TERRITORIES from DB data
+  if (dbTerritories?.length) {
+    TERRITORIES = dbTerritories.map((t) => t.name);
+  }
   const [editingId, setEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
