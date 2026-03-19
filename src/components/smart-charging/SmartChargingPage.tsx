@@ -1,14 +1,13 @@
 // ============================================================
 // EZDrive — Smart Charging Page (GreenFlux-style)
 // List → click name → Detail view (read-only) → click Editer → Edit view
+// Data layer: Supabase tables (smart_charging_groups, smart_charging_schedules, smart_charging_group_evses)
 // ============================================================
 
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useCpo } from "@/contexts/CpoContext";
-import { useTerritories } from "@/hooks/useTerritories";
-import { useStations } from "@/hooks/useStations";
 import {
   BatteryCharging,
   Zap,
@@ -42,6 +41,10 @@ interface SmartChargingGroup {
   cpoName: string;
   cpoCode: string;
   territoryId: string | null;
+  remarks: string;
+  defaultCapacityKw: number;
+  capacityMethod: string;
+  timezone: string;
 }
 
 type EditTab = "details" | "algorithm" | "evse";
@@ -55,12 +58,21 @@ interface EvseRow {
   isConnected: boolean;
 }
 
+interface ScheduleRow {
+  id: string;
+  group_id: string;
+  day_of_week: string;
+  start_hour: string;
+  end_hour: string;
+  capacity_kw: number;
+}
+
 // ── Constants ────────────────────────────────────────────────
 
 const ALGORITHMS = [
-  { value: "capacity_management_ac", label: "Capacity Management AC", description: "Cet algorithme est utilisé pour éviter la surcharge d'un disjoncteur. Il est généralement appliqué à un groupe de stations de charge qui sont toutes connectées au même disjoncteur." },
-  { value: "capacity_management_dc", label: "Capacity Management DC", description: "Algorithme de gestion de capacité pour bornes DC rapides." },
-  { value: "load_balancing", label: "Load Balancing", description: "Répartition équilibrée de la charge entre les bornes du groupe." },
+  { value: "capacity_management_ac", label: "Capacity Management AC", description: "Cet algorithme est utilis\u00e9 pour \u00e9viter la surcharge d'un disjoncteur. Il est g\u00e9n\u00e9ralement appliqu\u00e9 \u00e0 un groupe de stations de charge qui sont toutes connect\u00e9es au m\u00eame disjoncteur." },
+  { value: "capacity_management_dc", label: "Capacity Management DC", description: "Algorithme de gestion de capacit\u00e9 pour bornes DC rapides." },
+  { value: "load_balancing", label: "Load Balancing", description: "R\u00e9partition \u00e9quilibr\u00e9e de la charge entre les bornes du groupe." },
 ];
 
 const TIMEZONES = [
@@ -72,19 +84,6 @@ const TIMEZONES = [
 
 const DAYS_OF_WEEK = ["Normal", "Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
 
-// Sample capacity schedule (would come from config file in production)
-const CAPACITY_SCHEDULE = [
-  { day: "Wednesday", start: "00:00:00", end: "11:00:00", capacity: 20 },
-  { day: "Wednesday", start: "11:00:00", end: "15:00:00", capacity: 0 },
-  { day: "Wednesday", start: "18:00:00", end: "23:59:00", capacity: 20 },
-  { day: "Thursday", start: "00:00:00", end: "11:00:00", capacity: 20 },
-  { day: "Thursday", start: "11:00:00", end: "15:00:00", capacity: 0 },
-  { day: "Thursday", start: "18:00:00", end: "23:59:00", capacity: 20 },
-  { day: "Friday", start: "00:00:00", end: "11:00:00", capacity: 20 },
-  { day: "Friday", start: "11:00:00", end: "15:00:00", capacity: 0 },
-  { day: "Friday", start: "18:00:00", end: "23:59:00", capacity: 20 },
-];
-
 // ══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
@@ -95,7 +94,7 @@ export function SmartChargingPage() {
   const queryClient = useQueryClient();
 
   const handleSaved = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["smart-charging"] });
+    queryClient.invalidateQueries({ queryKey: ["smart-charging-groups"] });
     setEditingGroup(null);
     // Go back to detail view after save
     if (editingGroup) setSelectedGroup(editingGroup);
@@ -135,9 +134,8 @@ export function SmartChargingPage() {
 // ══════════════════════════════════════════════════════════════
 
 function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => void }) {
-  const { selectedCpoId } = useCpo();
-  const { data: territories } = useTerritories();
-  const { data: stations } = useStations(selectedCpoId);
+  const { selectedCpoId, cpoName } = useCpo();
+  const queryClient = useQueryClient();
   const [filterName, setFilterName] = useState("");
   const [filterCpo, setFilterCpo] = useState("");
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -160,71 +158,92 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Fetch chargepoints to count EVSEs per territory
-  const { data: chargepoints, isError, refetch, dataUpdatedAt: _dataUpdatedAt } = useQuery({
-    queryKey: ["smart-charging-chargepoints-all", selectedCpoId ?? "all"],
-    retry: false,
+  // Fetch groups from smart_charging_groups table
+  const { data: groups, isError, refetch } = useQuery({
+    queryKey: ["smart-charging-groups", selectedCpoId],
     queryFn: async () => {
-      try {
-        let query = supabase
-          .from("ocpp_chargepoints")
-          .select("id, station_id, connector_count, is_connected");
-        if (selectedCpoId && stations?.length) {
-          query = query.in("station_id", stations.map((s) => s.id));
-        }
-        const { data, error } = await query;
-        if (error) return [];
-        return data ?? [];
-      } catch { return []; }
+      let query = supabase
+        .from("smart_charging_groups")
+        .select("*, smart_charging_group_evses(count)")
+        .eq("is_active", true)
+        .order("name");
+      if (selectedCpoId) {
+        query = query.eq("cpo_id", selectedCpoId);
+      }
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data ?? []).map((g: any) => ({
+        id: g.id,
+        name: g.name,
+        algorithm: g.algorithm,
+        structure: g.structure,
+        evseCount: g.smart_charging_group_evses?.[0]?.count ?? 0,
+        cpoName: g.cpo_name ?? "",
+        cpoCode: g.cpo_id ?? "",
+        territoryId: g.territory_id,
+        remarks: g.remarks ?? "",
+        defaultCapacityKw: g.default_capacity_kw ?? 0,
+        capacityMethod: g.capacity_method ?? "default",
+        timezone: g.timezone ?? "America/Guadeloupe",
+      }));
     },
-    enabled: !selectedCpoId || (stations?.length ?? 0) > 0,
   });
 
-  // Build groups from territories
-  const groups = useMemo((): SmartChargingGroup[] => {
-    if (!territories || !stations) return [];
+  // Create group mutation
+  const createGroup = useMutation({
+    mutationFn: async (structure: string) => {
+      const { data, error } = await supabase
+        .from("smart_charging_groups")
+        .insert({
+          name: `Nouveau groupe ${structure}`,
+          structure,
+          algorithm: "capacity_management_ac",
+          cpo_id: selectedCpoId || null,
+          cpo_name: cpoName || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-groups"] });
+      // Open the new group in edit mode by selecting it first
+      const newGroup: SmartChargingGroup = {
+        id: data.id,
+        name: data.name,
+        algorithm: data.algorithm,
+        structure: data.structure,
+        evseCount: 0,
+        cpoName: data.cpo_name ?? "",
+        cpoCode: data.cpo_id ?? "",
+        territoryId: data.territory_id ?? null,
+        remarks: data.remarks ?? "",
+        defaultCapacityKw: data.default_capacity_kw ?? 0,
+        capacityMethod: data.capacity_method ?? "default",
+        timezone: data.timezone ?? "America/Guadeloupe",
+      };
+      onSelect(newGroup);
+    },
+  });
 
-    const territoryMap = new Map<string, { stations: typeof stations; cpoName: string; cpoCode: string }>();
-
-    for (const s of stations) {
-      const tKey = s.territory_id ?? "unknown";
-      if (!territoryMap.has(tKey)) {
-        territoryMap.set(tKey, {
-          stations: [],
-          cpoName: s.cpo_name ?? "ezdrive",
-          cpoCode: s.cpo_code ?? "ezdrive",
-        });
-      }
-      territoryMap.get(tKey)!.stations.push(s);
-    }
-
-    const result: SmartChargingGroup[] = [];
-
-    for (const t of territories) {
-      const entry = territoryMap.get(t.id);
-      const stationIds = entry?.stations.map((s) => s.id) ?? [];
-      const evseCount = chargepoints
-        ?.filter((cp: any) => stationIds.includes(cp.station_id))
-        .reduce((sum: number, cp: any) => sum + (cp.connector_count ?? 0), 0) ?? 0;
-
-      result.push({
-        id: t.id,
-        name: t.name,
-        algorithm: "Capacity Management AC",
-        structure: "Standalone",
-        evseCount,
-        cpoName: entry?.cpoName ?? "ezdrive",
-        cpoCode: entry?.cpoCode ?? "ezdrive",
-        territoryId: t.id,
-      });
-    }
-
-    return result;
-  }, [territories, stations, chargepoints]);
+  // Delete group mutation
+  const deleteGroup = useMutation({
+    mutationFn: async (groupId: string) => {
+      const { error } = await supabase
+        .from("smart_charging_groups")
+        .delete()
+        .eq("id", groupId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-groups"] });
+    },
+  });
 
   // Filter
   const filtered = useMemo(() => {
-    let result = groups;
+    let result = groups ?? [];
     if (filterName) {
       const q = filterName.toLowerCase();
       result = result.filter((g) => g.name.toLowerCase().includes(q));
@@ -252,14 +271,20 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
           {createDropdownOpen && (
             <div className="absolute right-0 top-full mt-1 w-48 bg-surface border border-border rounded-xl shadow-lg z-50 py-1">
               <button
-                onClick={() => setCreateDropdownOpen(false)}
+                onClick={() => {
+                  setCreateDropdownOpen(false);
+                  createGroup.mutate("Standalone");
+                }}
                 className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-foreground hover:bg-surface-elevated transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
                 Standalone
               </button>
               <button
-                onClick={() => setCreateDropdownOpen(false)}
+                onClick={() => {
+                  setCreateDropdownOpen(false);
+                  createGroup.mutate("Multi-level");
+                }}
                 className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-foreground hover:bg-surface-elevated transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -292,10 +317,10 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mx-6 mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2 text-red-700">
             <AlertCircle className="h-5 w-5" />
-            <span>Erreur lors du chargement des données. Veuillez réessayer.</span>
+            <span>Erreur lors du chargement des donn\u00e9es. Veuillez r\u00e9essayer.</span>
           </div>
           <button onClick={() => refetch()} className="text-red-700 hover:text-red-900 font-medium text-sm">
-            Réessayer
+            R\u00e9essayer
           </button>
         </div>
       )}
@@ -348,7 +373,9 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
+              {!groups ? (
+                <tr><td colSpan={6} className="py-12 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-foreground-muted" /></td></tr>
+              ) : filtered.length === 0 ? (
                 <tr><td colSpan={6} className="py-12 text-center text-foreground-muted text-sm">Aucun groupe de charge intelligente</td></tr>
               ) : filtered.map((group) => (
                 <tr
@@ -386,7 +413,6 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
                                 <button
                                   onClick={() => {
                                     setRowMenuOpen(null);
-                                    // Open in new tab - navigate to same page state
                                     window.open(`/smart-charging?group=${group.id}`, "_blank");
                                   }}
                                   className="w-full flex items-center gap-2 px-4 py-2 text-sm text-foreground hover:bg-surface-elevated transition-colors"
@@ -398,7 +424,7 @@ function GroupListView({ onSelect }: { onSelect: (group: SmartChargingGroup) => 
                                   onClick={() => {
                                     setRowMenuOpen(null);
                                     if (confirm(`Supprimer le groupe "${group.name}" ?`)) {
-                                      // Delete is a placeholder — future: delete from smart_charging_groups table
+                                      deleteGroup.mutate(group.id);
                                     }
                                   }}
                                   className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-surface-elevated transition-colors"
@@ -440,6 +466,7 @@ function GroupDetailView({
   onBack: () => void;
   onEdit: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [editDropdownOpen, setEditDropdownOpen] = useState(false);
   const [capacityDayTab, setCapacityDayTab] = useState("Normal");
   const [evseCollapsed, setEvseCollapsed] = useState(false);
@@ -455,51 +482,99 @@ function GroupDetailView({
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Fetch EVSEs
-  const { data: stations } = useStations();
-  const territoryStations = useMemo(() => {
-    if (!stations || !group.territoryId) return [];
-    return stations.filter((s) => s.territory_id === group.territoryId);
-  }, [stations, group.territoryId]);
+  // Delete group mutation
+  const deleteGroup = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("smart_charging_groups")
+        .delete()
+        .eq("id", group.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-groups"] });
+      onBack();
+    },
+  });
 
+  // Fetch EVSEs from smart_charging_group_evses
   const { data: evseRows } = useQuery<EvseRow[]>({
-    queryKey: ["smart-charging-detail-evses", group.territoryId],
+    queryKey: ["smart-charging-evses", group.id],
     queryFn: async () => {
-      if (territoryStations.length === 0) return [];
-      const stationIds = territoryStations.map((s) => s.id);
       const { data, error } = await supabase
-        .from("ocpp_chargepoints")
-        .select("id, chargepoint_identity, station_id, is_connected, last_heartbeat_at")
-        .in("station_id", stationIds)
-        .order("last_heartbeat_at", { ascending: false });
+        .from("smart_charging_group_evses")
+        .select("*, ocpp_chargepoints(id, chargepoint_identity, station_id, is_connected, last_heartbeat_at)")
+        .eq("group_id", group.id);
       if (error) return [];
-      return (data ?? []).map((cp: any) => ({
-        id: cp.id,
-        identity: `FR-GFX-${cp.chargepoint_identity}-1`,
-        stationIdentity: cp.chargepoint_identity ?? "",
-        status: cp.is_connected ? "Available" : "Unknown",
-        lastHeartbeat: cp.last_heartbeat_at,
-        isConnected: cp.is_connected ?? false,
+      return (data ?? []).map((row: any) => ({
+        id: row.ocpp_chargepoints?.id ?? row.chargepoint_id,
+        identity: row.ocpp_chargepoints?.chargepoint_identity ?? "",
+        stationIdentity: row.ocpp_chargepoints?.chargepoint_identity ?? "",
+        status: row.ocpp_chargepoints?.is_connected ? "Available" : "Unknown",
+        lastHeartbeat: row.ocpp_chargepoints?.last_heartbeat_at,
+        isConnected: row.ocpp_chargepoints?.is_connected ?? false,
       }));
     },
-    enabled: territoryStations.length > 0,
+  });
+
+  // Fetch schedules from smart_charging_schedules
+  const { data: schedules } = useQuery<ScheduleRow[]>({
+    queryKey: ["smart-charging-schedules", group.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("smart_charging_schedules")
+        .select("*")
+        .eq("group_id", group.id)
+        .order("day_of_week")
+        .order("start_hour");
+      if (error) throw error;
+      return data ?? [];
+    },
   });
 
   const chargingEvses = evseRows?.filter((e) => e.status === "Available" && e.isConnected).length ?? 0;
   const totalEvses = evseRows?.length ?? 0;
-  const currentCapacity = 20;
+  const currentCapacity = group.defaultCapacityKw;
   const usagePercent = totalEvses > 0 ? Math.round((chargingEvses / totalEvses) * 100) : 0;
 
-  // Generate chart bars (24 hours)
+  // Find the algorithm label
+  const algoLabel = ALGORITHMS.find((a) => a.value === group.algorithm)?.label ?? group.algorithm;
+
+  // Find the timezone label
+  const tzLabel = TIMEZONES.find((tz) => tz.value === group.timezone)?.label ?? group.timezone;
+
+  // Capacity method display
+  const capacityMethodLabel = group.capacityMethod === "file" ? "Fichier" : group.capacityMethod === "api" ? "API" : "Valeurs par d\u00e9faut";
+
+  // Filter schedules for the selected day tab
+  const filteredSchedules = useMemo(() => {
+    if (!schedules) return [];
+    if (capacityDayTab === "Normal") return schedules;
+    return schedules.filter((s) => s.day_of_week === capacityDayTab);
+  }, [schedules, capacityDayTab]);
+
+  // Generate chart bars (24 hours) based on schedules
   const chartBars = useMemo(() => {
     const bars: { hour: number; value: number }[] = [];
     for (let h = 0; h < 24; h++) {
-      // Simple simulation based on schedule
-      const inPeak = h >= 11 && h < 15;
-      bars.push({ hour: h, value: inPeak ? 0 : currentCapacity });
+      // Find matching schedule for the current hour
+      let value = currentCapacity;
+      if (schedules && schedules.length > 0) {
+        for (const s of schedules) {
+          const startH = parseInt(s.start_hour?.split(":")[0] ?? "0", 10);
+          const endH = parseInt(s.end_hour?.split(":")[0] ?? "24", 10);
+          if (h >= startH && h < endH) {
+            value = s.capacity_kw;
+            break;
+          }
+        }
+      }
+      bars.push({ hour: h, value });
     }
     return bars;
-  }, []);
+  }, [schedules, currentCapacity]);
+
+  const maxCapacity = Math.max(currentCapacity, ...chartBars.map((b) => b.value), 1);
 
   const now = new Date();
   const currentHour = now.getHours();
@@ -542,7 +617,12 @@ function GroupDetailView({
                 Editer
               </button>
               <button
-                onClick={() => setEditDropdownOpen(false)}
+                onClick={() => {
+                  setEditDropdownOpen(false);
+                  if (confirm(`Supprimer le groupe "${group.name}" ?`)) {
+                    deleteGroup.mutate();
+                  }
+                }}
                 className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-surface-elevated transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -553,12 +633,12 @@ function GroupDetailView({
         </div>
       </div>
 
-      {/* Two-column: Détails + Paramètres */}
+      {/* Two-column: D\u00e9tails + Param\u00e8tres */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Détails */}
+        {/* Left: D\u00e9tails */}
         <div className="bg-surface border border-border rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-border flex items-center justify-between">
-            <h2 className="text-base font-semibold text-foreground">Détails</h2>
+            <h2 className="text-base font-semibold text-foreground">D\u00e9tails</h2>
             {totalEvses > 0 && (
               <span className="px-3 py-1 bg-primary/10 text-primary text-xs font-medium rounded-full">
                 {chargingEvses} of {totalEvses} EVSEs charging | {currentCapacity},00A | {usagePercent}%
@@ -573,41 +653,41 @@ function GroupDetailView({
             <div>
               <span className="text-sm text-foreground-muted">Remarques</span>
               <div className="mt-2 w-full min-h-[120px] px-3 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground-muted/50">
-                {/* Read-only remarks placeholder */}
+                {group.remarks || ""}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right: Paramètres */}
+        {/* Right: Param\u00e8tres */}
         <div className="bg-surface border border-border rounded-2xl overflow-hidden">
           <div className="px-6 py-4 border-b border-border">
-            <h2 className="text-base font-semibold text-foreground">Paramètres</h2>
+            <h2 className="text-base font-semibold text-foreground">Param\u00e8tres</h2>
           </div>
           <div className="p-6 space-y-3">
             <div className="flex items-center justify-between py-1.5">
               <span className="text-sm text-foreground-muted">Algorithme</span>
-              <span className="text-sm text-foreground">Capacity Management AC</span>
+              <span className="text-sm text-foreground">{algoLabel}</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-sm text-foreground-muted">Méthode de mise à jour de capacité</span>
-              <span className="text-sm text-foreground">Fichier</span>
+              <span className="text-sm text-foreground-muted">M\u00e9thode de mise \u00e0 jour de capacit\u00e9</span>
+              <span className="text-sm text-foreground">{capacityMethodLabel}</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-sm text-foreground-muted">Capacité par défaut</span>
+              <span className="text-sm text-foreground-muted">Capacit\u00e9 par d\u00e9faut</span>
               <span className="text-sm text-foreground">{currentCapacity} A</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-sm text-foreground-muted">Maximum du câble de la station de charge</span>
+              <span className="text-sm text-foreground-muted">Maximum du c\u00e2ble de la station de charge</span>
               <span className="text-sm text-foreground">-</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
-              <span className="text-sm text-foreground-muted">Alimentation électrique maximum</span>
+              <span className="text-sm text-foreground-muted">Alimentation \u00e9lectrique maximum</span>
               <span className="text-sm text-foreground">-</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
               <span className="text-sm text-foreground-muted">Fuseau horaire</span>
-              <span className="text-sm text-foreground">(UTC-04:00) Georgetown, La Paz, Manaus, San Juan</span>
+              <span className="text-sm text-foreground">{tzLabel}</span>
             </div>
 
             {/* Config file card */}
@@ -644,10 +724,10 @@ function GroupDetailView({
               aujourd'hui
             </button>
             <span className="text-sm text-foreground-muted italic">
-              L'équilibrage de charge n'est pas actif
+              L'\u00e9quilibrage de charge n'est pas actif
             </span>
             <span className="ml-auto text-sm text-primary font-medium cursor-pointer hover:text-primary/80 transition-colors">
-              réinitialiser le zoom
+              r\u00e9initialiser le zoom
             </span>
           </div>
 
@@ -655,17 +735,9 @@ function GroupDetailView({
           <div className="relative h-48 mb-2">
             {/* Y-axis labels */}
             <div className="absolute left-0 top-0 bottom-0 w-8 flex flex-col justify-between text-xs text-foreground-muted py-1">
-              <span>20</span>
-              <span>18</span>
-              <span>16</span>
-              <span>14</span>
-              <span>12</span>
-              <span>10</span>
-              <span>8</span>
-              <span>6</span>
-              <span>4</span>
-              <span>2</span>
-              <span>0</span>
+              {Array.from({ length: 11 }, (_, i) => (
+                <span key={i}>{Math.round(maxCapacity - (maxCapacity / 10) * i)}</span>
+              ))}
             </div>
             {/* Bars */}
             <div className="ml-10 h-full flex items-end gap-px">
@@ -673,7 +745,7 @@ function GroupDetailView({
                 <div
                   key={bar.hour}
                   className="flex-1 flex flex-col justify-end"
-                  title={`${bar.hour}:00 — ${bar.value}A`}
+                  title={`${bar.hour}:00 \u2014 ${bar.value}A`}
                 >
                   <div
                     className={cn(
@@ -682,7 +754,7 @@ function GroupDetailView({
                         ? "bg-red-400/60"
                         : "bg-gray-300/30"
                     )}
-                    style={{ height: `${(bar.value / 20) * 100}%` }}
+                    style={{ height: `${maxCapacity > 0 ? (bar.value / maxCapacity) * 100 : 0}%` }}
                   />
                 </div>
               ))}
@@ -699,10 +771,10 @@ function GroupDetailView({
         </div>
       </div>
 
-      {/* Capacité disponible */}
+      {/* Capacit\u00e9 disponible */}
       <div className="bg-surface border border-border rounded-2xl overflow-hidden">
         <div className="px-6 py-4 border-b border-border">
-          <h2 className="text-base font-semibold text-foreground">Capacité disponible (A)</h2>
+          <h2 className="text-base font-semibold text-foreground">Capacit\u00e9 disponible (A)</h2>
         </div>
         <div className="px-6 pt-4">
           {/* Day tabs */}
@@ -729,18 +801,20 @@ function GroupDetailView({
             <thead>
               <tr className="border-b border-border">
                 <th className="text-left py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Jour de la semaine</th>
-                <th className="text-left py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Heure de début</th>
+                <th className="text-left py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Heure de d\u00e9but</th>
                 <th className="text-left py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Heure de fin</th>
-                <th className="text-right py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Capacité</th>
+                <th className="text-right py-3 px-6 text-xs font-semibold text-foreground-muted uppercase">Capacit\u00e9</th>
               </tr>
             </thead>
             <tbody>
-              {CAPACITY_SCHEDULE.map((slot, idx) => (
-                <tr key={idx} className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors">
-                  <td className="px-6 py-3 text-foreground">{slot.day}</td>
-                  <td className="px-6 py-3 text-foreground">{slot.start}</td>
-                  <td className="px-6 py-3 text-foreground">{slot.end}</td>
-                  <td className="px-6 py-3 text-right text-foreground">{slot.capacity} (A)</td>
+              {filteredSchedules.length === 0 ? (
+                <tr><td colSpan={4} className="py-8 text-center text-foreground-muted text-sm">Aucun planning configur\u00e9</td></tr>
+              ) : filteredSchedules.map((slot, idx) => (
+                <tr key={slot.id ?? idx} className="border-b border-border/50 hover:bg-surface-elevated/30 transition-colors">
+                  <td className="px-6 py-3 text-foreground">{slot.day_of_week}</td>
+                  <td className="px-6 py-3 text-foreground">{slot.start_hour}</td>
+                  <td className="px-6 py-3 text-foreground">{slot.end_hour}</td>
+                  <td className="px-6 py-3 text-right text-foreground">{slot.capacity_kw} (A)</td>
                 </tr>
               ))}
             </tbody>
@@ -750,9 +824,9 @@ function GroupDetailView({
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-3 border-t border-border text-xs text-foreground-muted">
           <span>
-            récupéré le {now.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" })} @ {now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+            r\u00e9cup\u00e9r\u00e9 le {now.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" })} @ {now.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
           </span>
-          <span>montrer {CAPACITY_SCHEDULE.length} enregistrements</span>
+          <span>montrer {filteredSchedules.length} enregistrements</span>
         </div>
       </div>
 
@@ -784,7 +858,7 @@ function GroupDetailView({
                 </button>
               </div>
               <button className="px-4 py-2 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors">
-                Gérer Les EVSE Liés
+                G\u00e9rer Les EVSE Li\u00e9s
               </button>
             </div>
 
@@ -794,7 +868,7 @@ function GroupDetailView({
                 <thead>
                   <tr className="border-b border-border">
                     <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">
-                      <span className="inline-flex items-center gap-1">État de charge intelligente <ChevronDown className="w-3 h-3" /></span>
+                      <span className="inline-flex items-center gap-1">\u00c9tat de charge intelligente <ChevronDown className="w-3 h-3" /></span>
                     </th>
                     <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">
                       <span className="inline-flex items-center gap-1">Identifiant EVSE <ChevronDown className="w-3 h-3" /></span>
@@ -866,43 +940,35 @@ function GroupEditView({
   // Form state — Details
   const [groupName, setGroupName] = useState(group.name);
   const [groupCpo, setGroupCpo] = useState(group.cpoCode);
-  const [remarks, setRemarks] = useState("");
+  const [remarks, setRemarks] = useState(group.remarks);
 
   // Form state — Algorithm
-  const [algorithm, setAlgorithm] = useState("capacity_management_ac");
-  const [capacityMethod, setCapacityMethod] = useState<"default" | "file" | "api">("file");
-  const [defaultCapacity, setDefaultCapacity] = useState("20");
+  const [algorithm, setAlgorithm] = useState(group.algorithm || "capacity_management_ac");
+  const [capacityMethod, setCapacityMethod] = useState<"default" | "file" | "api">(
+    (group.capacityMethod as "default" | "file" | "api") || "default"
+  );
+  const [defaultCapacity, setDefaultCapacity] = useState(String(group.defaultCapacityKw || "20"));
   const [configFile] = useState("dynamicCapacityDayOfWeekExample.xlsx");
-  const [timezone, setTimezone] = useState("America/Guadeloupe");
+  const [timezone, setTimezone] = useState(group.timezone || "America/Guadeloupe");
 
-  // Fetch EVSEs for this group's territory
-  const { data: stations } = useStations();
-  const territoryStations = useMemo(() => {
-    if (!stations || !group.territoryId) return [];
-    return stations.filter((s) => s.territory_id === group.territoryId);
-  }, [stations, group.territoryId]);
-
+  // Fetch EVSEs for this group
   const { data: evseRows, isLoading: evseLoading, dataUpdatedAt: evseDataUpdatedAt } = useQuery<EvseRow[]>({
-    queryKey: ["smart-charging-evses", group.territoryId],
+    queryKey: ["smart-charging-evses", group.id],
     queryFn: async () => {
-      if (territoryStations.length === 0) return [];
-      const stationIds = territoryStations.map((s) => s.id);
       const { data, error } = await supabase
-        .from("ocpp_chargepoints")
-        .select("id, chargepoint_identity, station_id, is_connected, last_heartbeat_at")
-        .in("station_id", stationIds)
-        .order("last_heartbeat_at", { ascending: false });
+        .from("smart_charging_group_evses")
+        .select("*, ocpp_chargepoints(id, chargepoint_identity, station_id, is_connected, last_heartbeat_at)")
+        .eq("group_id", group.id);
       if (error) return [];
-      return (data ?? []).map((cp: any) => ({
-        id: cp.id,
-        identity: `FR-GFX-${cp.chargepoint_identity}-1`,
-        stationIdentity: cp.chargepoint_identity ?? "",
-        status: cp.is_connected ? "Available" : "Unknown",
-        lastHeartbeat: cp.last_heartbeat_at,
-        isConnected: cp.is_connected ?? false,
+      return (data ?? []).map((row: any) => ({
+        id: row.ocpp_chargepoints?.id ?? row.chargepoint_id,
+        identity: row.ocpp_chargepoints?.chargepoint_identity ?? "",
+        stationIdentity: row.ocpp_chargepoints?.chargepoint_identity ?? "",
+        status: row.ocpp_chargepoints?.is_connected ? "Available" : "Unknown",
+        lastHeartbeat: row.ocpp_chargepoints?.last_heartbeat_at,
+        isConnected: row.ocpp_chargepoints?.is_connected ?? false,
       }));
     },
-    enabled: territoryStations.length > 0,
   });
 
   const [evseFilterId, setEvseFilterId] = useState("");
@@ -918,13 +984,30 @@ function GroupEditView({
 
   async function handleSave() {
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 500));
-    setSaving(false);
-    onSaved();
+    try {
+      const { error } = await supabase
+        .from("smart_charging_groups")
+        .update({
+          name: groupName,
+          algorithm,
+          capacity_method: capacityMethod,
+          default_capacity_kw: parseFloat(defaultCapacity) || 0,
+          timezone,
+          remarks,
+          cpo_id: groupCpo,
+        })
+        .eq("id", group.id);
+      if (error) throw error;
+      onSaved();
+    } catch (err) {
+      console.error("Save error:", err);
+    } finally {
+      setSaving(false);
+    }
   }
 
   const TABS: { key: EditTab; label: string }[] = [
-    { key: "details", label: "Détails" },
+    { key: "details", label: "D\u00e9tails" },
     { key: "algorithm", label: "Algorithme" },
     { key: "evse", label: "EVSE" },
   ];
@@ -962,7 +1045,7 @@ function GroupEditView({
         ))}
       </div>
 
-      {/* ── Details Tab ── */}
+      {/* -- Details Tab -- */}
       {activeTab === "details" && (
         <div className="bg-surface border border-border rounded-2xl">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
@@ -992,7 +1075,7 @@ function GroupEditView({
               <textarea
                 value={remarks}
                 onChange={(e) => setRemarks(e.target.value)}
-                placeholder="Saisissez éventuellement des remarques sur le Groupe de charge intelligente..."
+                placeholder="Saisissez \u00e9ventuellement des remarques sur le Groupe de charge intelligente..."
                 rows={6}
                 className="w-full px-3 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 resize-none"
               />
@@ -1001,7 +1084,7 @@ function GroupEditView({
         </div>
       )}
 
-      {/* ── Algorithm Tab ── */}
+      {/* -- Algorithm Tab -- */}
       {activeTab === "algorithm" && (
         <div className="bg-surface border border-border rounded-2xl">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x divide-border">
@@ -1024,11 +1107,11 @@ function GroupEditView({
               </div>
             </div>
             <div className="p-6 space-y-5">
-              <h3 className="text-base font-semibold text-foreground">Méthode de mise à jour de capacité</h3>
+              <h3 className="text-base font-semibold text-foreground">M\u00e9thode de mise \u00e0 jour de capacit\u00e9</h3>
               <div className="flex items-center gap-6">
                 {[
-                  { key: "default" as const, label: "Toujours utiliser les valeurs par défaut" },
-                  { key: "file" as const, label: "Fichier basé" },
+                  { key: "default" as const, label: "Toujours utiliser les valeurs par d\u00e9faut" },
+                  { key: "file" as const, label: "Fichier bas\u00e9" },
                   { key: "api" as const, label: "API" },
                 ].map((opt) => (
                   <label key={opt.key} className="flex items-center gap-2 text-sm text-foreground cursor-pointer">
@@ -1044,7 +1127,7 @@ function GroupEditView({
                 ))}
               </div>
               <div>
-                <label className="block text-sm text-foreground mb-1">Capacité par défaut <span className="text-red-400">*</span></label>
+                <label className="block text-sm text-foreground mb-1">Capacit\u00e9 par d\u00e9faut <span className="text-red-400">*</span></label>
                 <div className="relative">
                   <Zap className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
                   <input
@@ -1092,9 +1175,10 @@ function GroupEditView({
         </div>
       )}
 
-      {/* ── EVSE Tab ── */}
+      {/* -- EVSE Tab -- */}
       {activeTab === "evse" && (
         <EvseTab
+          groupId={group.id}
           evses={filteredEvses}
           isLoading={evseLoading}
           filterId={evseFilterId}
@@ -1133,19 +1217,76 @@ function GroupEditView({
 // ══════════════════════════════════════════════════════════════
 
 function EvseTab({
+  groupId,
   evses,
   isLoading,
   filterId,
   onFilterIdChange,
   dataUpdatedAt,
 }: {
+  groupId: string;
   evses: EvseRow[];
   isLoading: boolean;
   filterId: string;
   onFilterIdChange: (v: string) => void;
   dataUpdatedAt: number;
 }) {
+  const queryClient = useQueryClient();
   const [collapsed, setCollapsed] = useState(false);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [cpSearch, setCpSearch] = useState("");
+
+  // Fetch available chargepoints for the "add EVSE" modal
+  const { data: availableChargepoints, isLoading: cpLoading } = useQuery({
+    queryKey: ["available-chargepoints-for-group", groupId, cpSearch],
+    queryFn: async () => {
+      let query = supabase
+        .from("ocpp_chargepoints")
+        .select("id, chargepoint_identity, station_id, is_connected")
+        .order("chargepoint_identity")
+        .limit(50);
+      if (cpSearch) {
+        query = query.ilike("chargepoint_identity", `%${cpSearch}%`);
+      }
+      const { data, error } = await query;
+      if (error) return [];
+      // Exclude already-added EVSEs
+      const existingIds = new Set(evses.map((e) => e.id));
+      return (data ?? []).filter((cp: any) => !existingIds.has(cp.id));
+    },
+    enabled: addModalOpen,
+  });
+
+  // Add EVSE to group mutation
+  const addEvse = useMutation({
+    mutationFn: async (chargepointId: string) => {
+      const { error } = await supabase
+        .from("smart_charging_group_evses")
+        .insert({
+          group_id: groupId,
+          chargepoint_id: chargepointId,
+        });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-evses", groupId] });
+    },
+  });
+
+  // Remove EVSE from group mutation
+  const removeEvse = useMutation({
+    mutationFn: async (chargepointId: string) => {
+      const { error } = await supabase
+        .from("smart_charging_group_evses")
+        .delete()
+        .eq("group_id", groupId)
+        .eq("chargepoint_id", chargepointId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["smart-charging-evses", groupId] });
+    },
+  });
 
   return (
     <div className="bg-surface border border-border rounded-2xl">
@@ -1169,7 +1310,10 @@ function EvseTab({
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-full" />
               </button>
             </div>
-            <button className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors">
+            <button
+              onClick={() => setAddModalOpen(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-primary text-white rounded-xl text-sm font-semibold hover:bg-primary/90 transition-colors"
+            >
               <Plus className="w-3.5 h-3.5" />
               Ajouter Un EVSE Au Groupe
             </button>
@@ -1179,7 +1323,7 @@ function EvseTab({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border">
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">État</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">\u00c9tat</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Identifiant EVSE</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Station ID</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-foreground-muted uppercase">Dernier PDU</th>
@@ -1223,7 +1367,16 @@ function EvseTab({
                         : "\u2014"}
                     </td>
                     <td className="px-3 py-2.5 text-right">
-                      <button className="text-xs text-red-400 hover:text-red-300 transition-colors">supprimer</button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Retirer l'EVSE "${evse.identity}" du groupe ?`)) {
+                            removeEvse.mutate(evse.id);
+                          }
+                        }}
+                        className="text-xs text-red-400 hover:text-red-300 transition-colors"
+                      >
+                        supprimer
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -1233,9 +1386,70 @@ function EvseTab({
 
           <div className="flex items-center justify-between mt-4 pt-3 border-t border-border text-xs text-foreground-muted">
             <span>
-              récupéré le {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+              r\u00e9cup\u00e9r\u00e9 le {dataUpdatedAt ? new Date(dataUpdatedAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "\u2014"}
             </span>
             <span>montrer {evses.length} enregistrements</span>
+          </div>
+        </div>
+      )}
+
+      {/* Add EVSE Modal */}
+      {addModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-surface border border-border rounded-2xl shadow-xl w-full max-w-lg mx-4">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h3 className="text-base font-semibold text-foreground">Ajouter un EVSE au groupe</h3>
+              <button onClick={() => setAddModalOpen(false)} className="p-1 text-foreground-muted hover:text-foreground transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
+                <input
+                  type="text"
+                  value={cpSearch}
+                  onChange={(e) => setCpSearch(e.target.value)}
+                  placeholder="Rechercher un chargepoint..."
+                  className="w-full pl-10 pr-3 py-2.5 bg-surface border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50"
+                />
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1">
+                {cpLoading ? (
+                  <div className="py-8 text-center"><Loader2 className="w-5 h-5 animate-spin mx-auto text-foreground-muted" /></div>
+                ) : !availableChargepoints || availableChargepoints.length === 0 ? (
+                  <p className="py-8 text-center text-foreground-muted text-sm">Aucun chargepoint disponible</p>
+                ) : availableChargepoints.map((cp: any) => (
+                  <div
+                    key={cp.id}
+                    className="flex items-center justify-between px-3 py-2 rounded-xl hover:bg-surface-elevated transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className={cn(
+                        "w-2 h-2 rounded-full",
+                        cp.is_connected ? "bg-emerald-400" : "bg-red-400"
+                      )} />
+                      <span className="text-sm text-foreground font-mono">{cp.chargepoint_identity}</span>
+                    </div>
+                    <button
+                      onClick={() => addEvse.mutate(cp.id)}
+                      disabled={addEvse.isPending}
+                      className="px-3 py-1 bg-primary text-white rounded-lg text-xs font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50"
+                    >
+                      Ajouter
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end px-6 py-4 border-t border-border">
+              <button
+                onClick={() => setAddModalOpen(false)}
+                className="px-4 py-2 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors"
+              >
+                Fermer
+              </button>
+            </div>
           </div>
         </div>
       )}
