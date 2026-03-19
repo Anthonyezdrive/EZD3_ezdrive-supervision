@@ -42,6 +42,7 @@ import { UsersPage } from "@/components/users/UsersPage";
 import { RolesPage } from "@/components/roles/RolesPage";
 import { AdminConfigPage } from "@/components/admin-config/AdminConfigPage";
 import { ValidateTokenPage } from "@/components/validate-token/ValidateTokenPage";
+import { SupportPage } from "@/components/support/SupportPage";
 // ── Portail B2B ──────────────────────────────────────────
 import { B2BLayout } from "@/components/b2b/B2BLayout";
 import { B2BOverviewPage } from "@/components/b2b/B2BOverviewPage";
@@ -136,6 +137,7 @@ export default function App() {
 
                 {/* ── Configuration ── */}
                 <Route path="/validate-token" element={<ValidateTokenPage />} />
+                <Route path="/support" element={<SupportPage />} />
 
                 {/* ── Legacy redirects (anciennes routes → nouvelles) ── */}
                 <Route path="/sessions" element={<Navigate to="/billing" replace />} />
