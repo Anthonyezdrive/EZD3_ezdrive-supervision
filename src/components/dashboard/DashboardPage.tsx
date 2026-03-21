@@ -5,6 +5,7 @@ import {
   BatteryCharging,
   CheckCircle,
   AlertTriangle,
+  Wifi,
   WifiOff,
   Zap,
   Users,
@@ -533,6 +534,32 @@ export function DashboardPage() {
     (s) => s.ocpp_status === "Faulted" || !s.is_online
   ) ?? [];
 
+  // ── Road connectivity stats ─────────────────────────────
+  const connectivityStats = useMemo(() => {
+    if (!stations) return { online: 0, offline: 0, total: 0 };
+    const roadStations = stations.filter((s: any) => s.source === "road");
+    const online = roadStations.filter((s: any) => s.connectivity_status === "Online").length;
+    return { online, offline: roadStations.length - online, total: roadStations.length };
+  }, [stations]);
+
+  // ── Road activity (24h) ────────────────────────────────
+  const { data: roadActivity } = useQuery({
+    queryKey: ["road-activity-24h"],
+    queryFn: async () => {
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from("ocpi_cdrs")
+        .select("total_energy, total_cost")
+        .eq("source", "road")
+        .gte("start_date_time", since);
+      if (error) throw error;
+      const sessions = data?.length ?? 0;
+      const totalKwh = data?.reduce((sum: number, c: any) => sum + (c.total_energy ?? 0), 0) ?? 0;
+      return { sessions, totalKwh: Math.round(totalKwh * 10) / 10 };
+    },
+    staleTime: 300_000,
+  });
+
   // ── Map data ──────────────────────────────────────────
   const mappableStations = useMemo(
     () => (stations ?? []).filter((s) => s.latitude != null && s.longitude != null),
@@ -789,6 +816,46 @@ export function DashboardPage() {
         <MetricCard icon={CreditCard} label="Abonnements actifs" value={businessMetrics?.activeSubscriptions ?? 0} color="#3498DB" />
         <MetricCard icon={Zap} label="Énergie totale" value={`${((businessMetrics?.totalEnergy ?? 0) / 1000).toFixed(1)} MWh`} color="#F39C12" compareValue={compareMode && compareMetrics ? compareMetrics.totalEnergy / 1000 : undefined} />
         <MetricCard icon={TrendingUp} label="Revenu total" value={`${((businessMetrics?.totalRevenue ?? 0) / 100).toLocaleString("fr-FR")} €`} color="#00D4AA" compareValue={compareMode && compareMetrics ? compareMetrics.totalRevenue / 100 : undefined} />
+      </div>
+
+      {/* ── Road Connectivity + Activity KPIs ──────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-surface border border-border rounded-xl p-4">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: "#2ECC7115" }}>
+              <Wifi className="w-4.5 h-4.5" style={{ color: "#2ECC71" }} />
+            </div>
+            <div>
+              <p className="text-sm font-heading font-bold text-foreground">
+                {connectivityStats.online}/{connectivityStats.total}
+              </p>
+              <p className="text-[11px] text-foreground-muted">Connectivité Road</p>
+            </div>
+          </div>
+          <p className="text-[10px] text-foreground-muted">
+            {connectivityStats.offline > 0 ? (
+              <span className="text-warning">{connectivityStats.offline} hors ligne</span>
+            ) : (
+              <span className="text-status-available">Toutes connectées</span>
+            )}
+          </p>
+        </div>
+        <div className="bg-surface border border-border rounded-xl p-4">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ backgroundColor: "#F39C1215" }}>
+              <Zap className="w-4.5 h-4.5" style={{ color: "#F39C12" }} />
+            </div>
+            <div>
+              <p className="text-sm font-heading font-bold text-foreground">
+                {roadActivity?.sessions ?? 0} <span className="text-[11px] font-normal text-foreground-muted">sessions</span>
+              </p>
+              <p className="text-[11px] text-foreground-muted">Activité Road (24h)</p>
+            </div>
+          </div>
+          <p className="text-[10px] text-foreground-muted">
+            {roadActivity?.totalKwh ?? 0} kWh distribués
+          </p>
+        </div>
       </div>
 
       {/* ── New KPIs: Occupation, Avg kWh, kWh by Territory ── */}
