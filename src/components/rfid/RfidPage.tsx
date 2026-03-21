@@ -65,6 +65,22 @@ interface Token {
   emsp: string | null;
   emsp_contract: string | null;
   source: string | null;
+  road_token_id: string | null;
+  issuer: string | null;
+}
+
+const SOURCE_OPTIONS = [
+  { value: "", label: "Toutes les sources" },
+  { value: "road", label: "Road.io" },
+  { value: "cdr_sync", label: "GreenFlux" },
+  { value: "csv_import", label: "Import CSV" },
+] as const;
+
+function getSourceBadge(source: string | null) {
+  if (source === "road") return { label: "Road.io", color: "bg-blue-500/10 text-blue-400" };
+  if (source === "cdr_sync") return { label: "GreenFlux", color: "bg-purple-500/10 text-purple-400" };
+  if (source === "csv_import") return { label: "CSV", color: "bg-amber-500/10 text-amber-400" };
+  return { label: source ?? "—", color: "bg-foreground-muted/10 text-foreground-muted" };
 }
 
 interface TokenBilling {
@@ -121,9 +137,10 @@ function formatTokenId(uid: string): string {
 export function RfidPage() {
   const { selectedCpoId } = useCpo();
   const queryClient = useQueryClient();
+  const [sourceFilter, setSourceFilter] = useState("");
 
   const { data: tokens, isLoading, isError, refetch } = useQuery<Token[]>({
-    queryKey: ["gfx-tokens", selectedCpoId ?? "all"],
+    queryKey: ["gfx-tokens", selectedCpoId ?? "all", sourceFilter],
     retry: 1,
     queryFn: async () => {
       const PAGE = 1000;
@@ -139,6 +156,7 @@ export function RfidPage() {
           .range(from, from + PAGE - 1);
 
         if (selectedCpoId) query = query.eq("cpo_id", selectedCpoId);
+        if (sourceFilter) query = query.eq("source", sourceFilter);
 
         const { data, error } = await query;
         if (error) throw error;
@@ -311,6 +329,15 @@ export function RfidPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          <select
+            value={sourceFilter}
+            onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+            className="px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-border-focus transition-colors"
+          >
+            {SOURCE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
           <div className="relative w-full sm:w-80">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
             <input
@@ -375,6 +402,7 @@ export function RfidPage() {
               <thead className="border-b border-border">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">État</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">Source</th>
                   <th className={thClass} onClick={() => handleSort("token_uid")}>Identifiant <SortIcon col="token_uid" /></th>
                   <th className={thClass} onClick={() => handleSort("driver_name")}>Conducteur <SortIcon col="driver_name" /></th>
                   <th className={thClass}>Groupe</th>
@@ -406,6 +434,16 @@ export function RfidPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
+                        {(() => {
+                          const badge = getSourceBadge(token.source);
+                          return (
+                            <span className={cn("inline-flex px-2 py-0.5 rounded-full text-xs font-medium", badge.color)}>
+                              {badge.label}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-3">
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-foreground font-mono truncate max-w-[200px]">
                             {formatTokenId(token.token_uid)}
@@ -435,6 +473,40 @@ export function RfidPage() {
                       </td>
                       <td className="px-4 py-3 text-center">
                         <div className="inline-flex items-center gap-1">
+                          {token.road_token_id && (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const action = token.status === "blocked" ? "unblock" : "block";
+                                if (!confirm(`${action === "block" ? "Bloquer" : "Débloquer"} ce token Road.io ?`)) return;
+                                try {
+                                  const res = await fetch(
+                                    `${import.meta.env.VITE_SUPABASE_URL || "https://phnqtqvwofzrhpuydoom.supabase.co"}/functions/v1/road-token-action`,
+                                    {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}` },
+                                      body: JSON.stringify({ tokenUid: token.token_uid, action }),
+                                    }
+                                  );
+                                  if (!res.ok) throw new Error(await res.text());
+                                  toast(`Token ${action === "block" ? "bloqué" : "débloqué"}`, "success");
+                                  refetch();
+                                } catch (err) {
+                                  toast(`Erreur : ${err instanceof Error ? err.message : "inconnue"}`, "error");
+                                }
+                              }}
+                              className={cn(
+                                "inline-flex items-center gap-1 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors",
+                                token.status === "blocked"
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20"
+                                  : "bg-orange-500/10 text-orange-400 border-orange-500/20 hover:bg-orange-500/20"
+                              )}
+                              title={token.status === "blocked" ? "Débloquer via Road.io" : "Bloquer via Road.io"}
+                            >
+                              <Ban className="w-3 h-3" />
+                              {token.status === "blocked" ? "Débloquer" : "Bloquer"}
+                            </button>
+                          )}
                           <button
                             onClick={(e) => { e.stopPropagation(); setTopUpToken(token); }}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-medium hover:bg-primary/20 transition-colors"

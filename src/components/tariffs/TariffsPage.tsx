@@ -61,6 +61,21 @@ interface OcpiTariff {
   end_date_time: string | null;
   last_updated: string | null;
   created_at: string;
+  source: string | null;
+  road_tariff_id: string | null;
+  cpo_id: string | null;
+}
+
+const TARIFF_SOURCE_OPTIONS = [
+  { value: "", label: "Toutes les sources" },
+  { value: "road", label: "Road.io" },
+  { value: "gfx", label: "GreenFlux" },
+] as const;
+
+function getTariffSourceBadge(source: string | null) {
+  if (source === "road") return { label: "Road.io", color: "bg-blue-500/10 text-blue-400" };
+  if (source === "gfx") return { label: "GreenFlux", color: "bg-purple-500/10 text-purple-400" };
+  return { label: source ?? "—", color: "bg-foreground-muted/10 text-foreground-muted" };
 }
 
 interface AssignFormData {
@@ -76,6 +91,7 @@ export function TariffsPage() {
   const { success: toastSuccess, error: toastError } = useToast();
   const [activeTab, setActiveTab] = useState<"station" | "ocpi">("station");
   const [search, setSearch] = useState("");
+  const [tariffSourceFilter, setTariffSourceFilter] = useState("");
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showCreateOcpiModal, setShowCreateOcpiModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<StationTariffRow | null>(null);
@@ -133,7 +149,7 @@ export function TariffsPage() {
 
   // ── OCPI tariffs — filtered by CPO via station_tariffs linkage ──
   const { data: ocpiTariffs, isLoading: ocpiLoading, isError: ocpiError, refetch: ocpiRefetch } = useQuery<OcpiTariff[]>({
-    queryKey: ["ocpi-tariffs", selectedCpoId ?? "all", cpoOcpiTariffIds],
+    queryKey: ["ocpi-tariffs", selectedCpoId ?? "all", cpoOcpiTariffIds, tariffSourceFilter],
     queryFn: async () => {
       let query = supabase
         .from("ocpi_tariffs")
@@ -142,6 +158,9 @@ export function TariffsPage() {
       if (selectedCpoId && cpoOcpiTariffIds) {
         if (cpoOcpiTariffIds.length === 0) return [];
         query = query.in("id", cpoOcpiTariffIds);
+      }
+      if (tariffSourceFilter) {
+        query = query.eq("source", tariffSourceFilter);
       }
       const { data, error } = await query;
       if (error) throw error;
@@ -394,6 +413,15 @@ export function TariffsPage() {
 
       {/* Search + Tabs */}
       <div className="flex flex-col sm:flex-row gap-3">
+        <select
+          value={tariffSourceFilter}
+          onChange={(e) => setTariffSourceFilter(e.target.value)}
+          className="px-3 py-2 bg-surface border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-primary/50"
+        >
+          {TARIFF_SOURCE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
           <input
@@ -759,6 +787,7 @@ function OcpiTariffsTable({
           <thead>
             <tr className="border-b border-border">
               <th className="text-left px-4 py-3 text-xs font-medium text-foreground-muted">ID Tarif</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-foreground-muted">Source</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-foreground-muted">Type</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-foreground-muted">Devise</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-foreground-muted">Composants</th>
@@ -776,6 +805,16 @@ function OcpiTariffsTable({
                     <span className="font-mono text-xs px-2 py-0.5 bg-primary/10 text-primary rounded font-medium">
                       {t.tariff_id}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {(() => {
+                      const badge = getTariffSourceBadge(t.source);
+                      return (
+                        <span className={cn("inline-flex px-2 py-0.5 rounded-full text-xs font-medium", badge.color)}>
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <span className="px-2 py-0.5 bg-surface-elevated rounded text-xs text-foreground-muted">

@@ -71,6 +71,23 @@ interface Driver {
   siret?: string | null;
   cost_center?: string | null;
   validity_date?: string | null;
+  // Road Phase 2 fields
+  road_account_id?: string | null;
+  billing_plan?: string | null;
+}
+
+const SOURCE_OPTIONS = [
+  { value: "", label: "Toutes les sources" },
+  { value: "road", label: "Road.io" },
+  { value: "gfx", label: "GreenFlux" },
+  { value: "ocpp", label: "OCPP Direct" },
+] as const;
+
+function getSourceBadge(source: string | null) {
+  if (source === "road") return { label: "Road.io", color: "bg-blue-500/10 text-blue-400" };
+  if (source === "gfx") return { label: "GreenFlux", color: "bg-purple-500/10 text-purple-400" };
+  if (source === "ocpp") return { label: "OCPP", color: "bg-green-500/10 text-green-400" };
+  return { label: source ?? "—", color: "bg-foreground-muted/10 text-foreground-muted" };
 }
 
 const TABS = ["Tous", "Actifs", "Inactifs"] as const;
@@ -132,6 +149,7 @@ function nameToHue(name: string | null): number {
 
 export function DriversPage() {
   const { selectedCpoId } = useCpo();
+  const [sourceFilter, setSourceFilter] = useState("");
 
   const {
     data: drivers,
@@ -139,7 +157,7 @@ export function DriversPage() {
     isError,
     refetch,
   } = useQuery<Driver[]>({
-    queryKey: ["drivers", selectedCpoId ?? "all"],
+    queryKey: ["drivers", selectedCpoId ?? "all", sourceFilter],
     retry: 1,
     queryFn: async () => {
       const PAGE = 1000;
@@ -157,12 +175,15 @@ export function DriversPage() {
       while (hasMore) {
         let query = supabase
           .from("all_consumers")
-          .select("id, driver_external_id, first_name, last_name, email, phone, country, status, retail_package, emsp_contract, customer_name, cpo_name, total_sessions, total_energy_kwh, first_session_at, last_session_at, source, created_at, address, postal_code, city, billing_mode, siret, cost_center, validity_date")
+          .select("id, driver_external_id, first_name, last_name, email, phone, country, status, retail_package, emsp_contract, customer_name, cpo_name, total_sessions, total_energy_kwh, first_session_at, last_session_at, source, created_at, address, postal_code, city, billing_mode, siret, cost_center, validity_date, road_account_id, billing_plan")
           .order("total_sessions", { ascending: false })
           .range(from, from + PAGE - 1);
 
         if (cpoName) {
           query = query.eq("cpo_name", cpoName);
+        }
+        if (sourceFilter) {
+          query = query.eq("source", sourceFilter);
         }
 
         const { data, error } = await query;
@@ -383,6 +404,15 @@ export function DriversPage() {
           ))}
         </div>
 
+        <select
+          value={sourceFilter}
+          onChange={(e) => { setSourceFilter(e.target.value); }}
+          className="px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground focus:outline-none focus:border-border-focus transition-colors"
+        >
+          {SOURCE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
         <div className="relative w-full sm:w-80">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
           <input
@@ -417,6 +447,7 @@ export function DriversPage() {
               <thead className="border-b border-border">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">État</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-foreground-muted uppercase tracking-wider">Source</th>
                   <th className={thClass} onClick={() => handleSort("full_name")}>Conducteur <SortIcon col="full_name" /></th>
                   <th className={thClass} onClick={() => handleSort("customer_name")}>Forfait / Groupe <SortIcon col="customer_name" /></th>
                   <th className={thClass}>Pays</th>
@@ -446,6 +477,16 @@ export function DriversPage() {
                         )}>
                           {isActive ? "Actif" : "Inactif"}
                         </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {(() => {
+                          const badge = getSourceBadge(driver.source);
+                          return (
+                            <span className={cn("inline-flex px-2 py-0.5 rounded-full text-xs font-medium", badge.color)}>
+                              {badge.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3 min-w-0">
