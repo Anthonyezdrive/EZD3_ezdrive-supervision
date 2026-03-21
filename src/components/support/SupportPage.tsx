@@ -16,6 +16,7 @@ import {
   useAssignTicket,
   useAddComment,
   useCloseTicket,
+  useDeleteTicket,
   getSLABadge,
   getFirstResponseTime,
   relativeTime,
@@ -45,7 +46,10 @@ import {
   Zap,
   CreditCard,
   Shield,
+  Archive,
 } from "lucide-react";
+import { useToast } from "@/contexts/ToastContext";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -56,6 +60,7 @@ const STATUS_CONFIG: Record<string, { label: string; icon: typeof Clock; color: 
   in_progress: { label: "En cours", icon: Clock, color: "text-amber-400", bg: "bg-amber-500/10 border-amber-500/20" },
   resolved: { label: "Résolu", icon: CheckCircle2, color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20" },
   closed: { label: "Fermé", icon: CheckCircle2, color: "text-foreground-muted", bg: "bg-foreground-muted/10 border-foreground-muted/20" },
+  archived: { label: "Archivé", icon: Archive, color: "text-foreground-muted", bg: "bg-foreground-muted/10 border-foreground-muted/20" },
 };
 
 const PRIORITY_CONFIG: Record<string, { label: string; color: string }> = {
@@ -161,6 +166,10 @@ export function SupportPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [archiveTicketId, setArchiveTicketId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const { success: toastSuccess, error: toastError } = useToast();
 
   // Queries via hook
   const { data: tickets, isLoading } = useTickets();
@@ -171,12 +180,19 @@ export function SupportPage() {
   const updateTicketMutation = useUpdateTicket();
   const assignMutation = useAssignTicket();
   const closeMutation = useCloseTicket();
+  const deleteMutation = useDeleteTicket();
 
   // Client-side filtering
   const filtered = useMemo(() => {
     if (!tickets) return [];
     return tickets.filter((t) => {
-      if (statusFilter !== "all" && t.status !== statusFilter) return false;
+      // Hide archived unless explicitly viewing archived
+      if (showArchived) {
+        if (t.status !== "archived") return false;
+      } else {
+        if (t.status === "archived") return false;
+        if (statusFilter !== "all" && t.status !== statusFilter) return false;
+      }
       if (assigneeFilter !== "all") {
         if (assigneeFilter === "unassigned" && t.assigned_to) return false;
         if (assigneeFilter !== "unassigned" && t.assigned_to !== assigneeFilter) return false;
@@ -187,7 +203,7 @@ export function SupportPage() {
       }
       return true;
     });
-  }, [tickets, statusFilter, assigneeFilter, search]);
+  }, [tickets, statusFilter, assigneeFilter, search, showArchived]);
 
   const kpis = useMemo(() => {
     if (!tickets) return { total: 0, open: 0, inProgress: 0, resolved: 0 };
@@ -279,13 +295,25 @@ export function SupportPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-foreground-muted" />
               <input type="text" placeholder="Rechercher un ticket..." value={search} onChange={(e) => setSearch(e.target.value)} className={cn(inputClass, "pl-9")} />
             </div>
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="px-3 py-2 bg-surface border border-border rounded-xl text-sm text-foreground">
+            <select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setShowArchived(false); }} className="px-3 py-2 bg-surface border border-border rounded-xl text-sm text-foreground">
               <option value="all">Tous les statuts</option>
               <option value="open">Ouverts</option>
               <option value="in_progress">En cours</option>
               <option value="resolved">Résolus</option>
               <option value="closed">Fermés</option>
             </select>
+            <button
+              onClick={() => { setShowArchived(!showArchived); setStatusFilter("all"); }}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 border rounded-xl text-sm font-medium transition-colors",
+                showArchived
+                  ? "bg-primary/10 border-primary/30 text-primary"
+                  : "bg-surface border-border text-foreground-muted hover:text-foreground"
+              )}
+            >
+              <Archive className="w-4 h-4" />
+              Archivés
+            </button>
             <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)} className="px-3 py-2 bg-surface border border-border rounded-xl text-sm text-foreground">
               <option value="all">Tous les assignés</option>
               <option value="unassigned">Non assigné</option>
@@ -475,8 +503,38 @@ export function SupportPage() {
           onAssign={(ticketId, userId) => assignMutation.mutate({ id: ticketId, assigned_to: userId })}
           onStatusChange={(ticketId, status, notes) => updateTicketMutation.mutate({ id: ticketId, status, resolution_notes: notes })}
           onCloseTicket={(ticketId, notes) => closeMutation.mutate({ id: ticketId, resolution_notes: notes })}
+          onArchive={(ticketId) => {
+            setSelectedTicket(null);
+            setArchiveTicketId(ticketId);
+          }}
         />
       )}
+
+      {/* Archive Confirm Dialog */}
+      <ConfirmDialog
+        open={!!archiveTicketId}
+        title="Archiver ce ticket ?"
+        description="Il ne sera plus visible dans la liste. Vous pourrez le retrouver dans l'onglet Archivés."
+        confirmLabel="Archiver"
+        loadingLabel="Archivage..."
+        variant="warning"
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (archiveTicketId) {
+            deleteMutation.mutate(archiveTicketId, {
+              onSuccess: () => {
+                toastSuccess("Ticket archivé");
+                setArchiveTicketId(null);
+              },
+              onError: (err: Error) => {
+                toastError("Erreur", err.message);
+                setArchiveTicketId(null);
+              },
+            });
+          }
+        }}
+        onCancel={() => setArchiveTicketId(null)}
+      />
     </div>
   );
 }
@@ -588,6 +646,7 @@ function TicketDetailSlideOver({
   onAssign,
   onStatusChange,
   onCloseTicket,
+  onArchive,
 }: {
   ticket: Ticket;
   profiles: { id: string; full_name: string | null; email: string | null }[];
@@ -597,6 +656,7 @@ function TicketDetailSlideOver({
   onAssign: (ticketId: string, userId: string | null) => void;
   onStatusChange: (ticketId: string, status: string, notes?: string) => void;
   onCloseTicket: (ticketId: string, notes?: string) => void;
+  onArchive: (ticketId: string) => void;
 }) {
   const [newComment, setNewComment] = useState("");
   const [assignTo, setAssignTo] = useState(ticket.assigned_to ?? "");
@@ -699,7 +759,7 @@ function TicketDetailSlideOver({
           </div>
 
           {/* Status actions */}
-          {ticket.status !== "closed" && (
+          {ticket.status !== "closed" && ticket.status !== "archived" && (
             <div>
               <h4 className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-2">Actions</h4>
               <div className="flex gap-2 flex-wrap">
@@ -727,6 +787,13 @@ function TicketDetailSlideOver({
                     Fermer le ticket
                   </button>
                 )}
+                <button
+                  onClick={() => onArchive(ticket.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground-muted bg-foreground-muted/10 border border-foreground-muted/20 rounded-lg hover:bg-foreground-muted/20 transition-colors"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  Archiver
+                </button>
               </div>
             </div>
           )}

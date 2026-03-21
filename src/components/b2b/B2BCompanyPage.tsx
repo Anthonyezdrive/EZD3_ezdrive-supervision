@@ -28,7 +28,9 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useB2BClientUsers, useUpdateB2BClientSelf, useUploadB2BLogo } from "@/hooks/useB2BCompany";
-import { useReimbursementRuns, useReimbursementLineItems } from "@/hooks/useReimbursements";
+import { useReimbursementRuns, useReimbursementLineItems, useDeleteReimbursementRun } from "@/hooks/useReimbursements";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/contexts/ToastContext";
 import { PageHelp } from "@/components/ui/PageHelp";
 import type { B2BClient } from "@/types/b2b";
 
@@ -723,6 +725,9 @@ function B2BNotificationsSection({ clientName }: { clientName: string }) {
 function B2BReimbursementSection({ clientId }: { clientId: string }) {
   const { data: runs, isLoading } = useReimbursementRuns(clientId);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [cancelRun, setCancelRun] = useState<{ id: string; status: string } | null>(null);
+  const deleteRunMutation = useDeleteReimbursementRun();
+  const { success: toastSuccess, error: toastError } = useToast();
 
   const statusConfig: Record<string, { label: string; bg: string; text: string; border: string }> = {
     pending: { label: "En attente", bg: "bg-yellow-500/10", text: "text-yellow-400", border: "border-yellow-500/25" },
@@ -730,6 +735,7 @@ function B2BReimbursementSection({ clientId }: { clientId: string }) {
     approved: { label: "Approuvé", bg: "bg-emerald-500/10", text: "text-emerald-400", border: "border-emerald-500/25" },
     paid: { label: "Payé", bg: "bg-green-500/10", text: "text-green-400", border: "border-green-500/25" },
     rejected: { label: "Rejeté", bg: "bg-red-500/10", text: "text-red-400", border: "border-red-500/25" },
+    cancelled: { label: "Annulé", bg: "bg-foreground-muted/10", text: "text-foreground-muted", border: "border-border" },
   };
 
   function toggleExpand(runId: string) {
@@ -783,6 +789,17 @@ function B2BReimbursementSection({ clientId }: { clientId: string }) {
                     <span className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-xs font-semibold ${sc.bg} ${sc.text} ${sc.border}`}>
                       {sc.label}
                     </span>
+                    {(run.status === "pending" || run.status === "calculated") && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCancelRun({ id: run.id, status: run.status });
+                        }}
+                        className="px-2 py-0.5 text-[10px] font-medium text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg hover:bg-red-500/20 transition-colors"
+                      >
+                        Annuler
+                      </button>
+                    )}
                     <ChevronDown className={`w-4 h-4 text-foreground-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} />
                   </div>
                 </button>
@@ -794,6 +811,38 @@ function B2BReimbursementSection({ clientId }: { clientId: string }) {
       ) : (
         <p className="text-sm text-foreground-muted">Aucun remboursement pour cette période</p>
       )}
+
+      {/* Cancel Confirm Dialog */}
+      <ConfirmDialog
+        open={!!cancelRun}
+        title="Annuler ce remboursement ?"
+        description={cancelRun?.status === "pending"
+          ? "Ce remboursement en attente sera supprimé définitivement."
+          : "Ce remboursement sera marqué comme annulé."
+        }
+        confirmLabel="Annuler le remboursement"
+        loadingLabel="Annulation..."
+        variant="danger"
+        loading={deleteRunMutation.isPending}
+        onConfirm={() => {
+          if (cancelRun) {
+            deleteRunMutation.mutate(
+              { id: cancelRun.id, status: cancelRun.status },
+              {
+                onSuccess: () => {
+                  toastSuccess("Remboursement annulé");
+                  setCancelRun(null);
+                },
+                onError: (err: Error) => {
+                  toastError("Erreur", err.message);
+                  setCancelRun(null);
+                },
+              }
+            );
+          }
+        }}
+        onCancel={() => setCancelRun(null)}
+      />
     </div>
   );
 }

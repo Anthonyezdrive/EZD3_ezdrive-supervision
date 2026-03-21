@@ -238,6 +238,23 @@ export function useAssignIntervention() {
   });
 }
 
+/** Archive (soft delete) an intervention */
+export function useDeleteIntervention() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (interventionId: string) => {
+      const { error } = await supabase
+        .from("interventions")
+        .update({ status: "archived" })
+        .eq("id", interventionId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["interventions"] });
+    },
+  });
+}
+
 export function useStartWork() {
   const queryClient = useQueryClient();
   return useMutation({

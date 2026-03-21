@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { PageHelp } from "@/components/ui/PageHelp";
+import { useToast } from "@/contexts/ToastContext";
 import {
   CreditCard,
   Users,
@@ -19,6 +20,8 @@ import {
   Link2,
   Unlink,
   Ban,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 
 // ============================================================
@@ -156,6 +159,7 @@ function billingLabel(period: string): string {
 
 export function SubscriptionsPage() {
   const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
   const [statusFilter, setStatusFilter] = useState<SubscriptionStatus | "ALL">("ALL");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -163,6 +167,8 @@ export function SubscriptionsPage() {
   const [showCreateSub, setShowCreateSub] = useState(false);
   const [syncingOfferId, setSyncingOfferId] = useState<string | null>(null);
   const [cancellingSubId, setCancellingSubId] = useState<string | null>(null);
+  const [editingOffer, setEditingOffer] = useState<SubscriptionOffer | null>(null);
+  const [deleteOfferTarget, setDeleteOfferTarget] = useState<SubscriptionOffer | null>(null);
 
   // --- Subscriptions query ---
   const {
@@ -352,6 +358,42 @@ export function SubscriptionsPage() {
       queryClient.invalidateQueries({ queryKey: ["subscription-offers"] });
       setShowCreateOffer(false);
     },
+  });
+
+  // --- Update offer mutation ---
+  const updateOfferMutation = useMutation({
+    mutationFn: async (data: { id: string; name: string; description: string; price_cents: number; billing_period: string; discount_percent: number | null; features: string[] }) => {
+      const { error } = await supabase.from("subscription_offers").update({
+        name: data.name,
+        description: data.description,
+        price_cents: data.price_cents,
+        billing_period: data.billing_period,
+        discount_percent: data.discount_percent,
+        benefits: data.features,
+      }).eq("id", data.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subscription-offers"] });
+      queryClient.invalidateQueries({ queryKey: ["subscriptions"] });
+      toastSuccess("Offre modifiée avec succès");
+      setEditingOffer(null);
+    },
+    onError: (err: Error) => toastError(err.message),
+  });
+
+  // --- Delete offer mutation ---
+  const deleteOfferMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from("subscription_offers").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subscription-offers"] });
+      toastSuccess("Offre supprimée avec succès");
+      setDeleteOfferTarget(null);
+    },
+    onError: (err: Error) => toastError(err.message),
   });
 
   // --- Create subscription mutation ---
@@ -637,19 +679,37 @@ export function SubscriptionsPage() {
               key={offer.id}
               className="bg-surface border border-border rounded-2xl p-5 hover:border-primary/30 transition-colors"
             >
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-                  <Star className="w-4 h-4 text-primary" />
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+                    <Star className="w-4 h-4 text-primary" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-foreground text-sm">
+                      {offer.name}
+                    </p>
+                    {offer.discount_percent && (
+                      <span className="text-[10px] font-medium text-warning bg-warning/10 px-1.5 py-0.5 rounded">
+                        -{offer.discount_percent}%
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <p className="font-semibold text-foreground text-sm">
-                    {offer.name}
-                  </p>
-                  {offer.discount_percent && (
-                    <span className="text-[10px] font-medium text-warning bg-warning/10 px-1.5 py-0.5 rounded">
-                      -{offer.discount_percent}%
-                    </span>
-                  )}
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setEditingOffer(offer)}
+                    className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                    title="Modifier l'offre"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => setDeleteOfferTarget(offer)}
+                    className="p-1.5 text-foreground-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                    title="Supprimer l'offre"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
 
@@ -737,6 +797,28 @@ export function SubscriptionsPage() {
           offers={offers ?? []}
         />
       )}
+
+      {/* Edit Offer Modal */}
+      {editingOffer && (
+        <CreateOfferModal
+          onClose={() => setEditingOffer(null)}
+          onSubmit={(data) => updateOfferMutation.mutate({ ...data, id: editingOffer.id })}
+          isLoading={updateOfferMutation.isPending}
+          error={(updateOfferMutation.error as Error | null)?.message ?? null}
+          editMode
+          initialData={editingOffer}
+        />
+      )}
+
+      {/* Delete Offer Confirmation */}
+      {deleteOfferTarget && (
+        <DeleteOfferConfirmModal
+          offer={deleteOfferTarget}
+          onConfirm={() => deleteOfferMutation.mutate(deleteOfferTarget.id)}
+          onCancel={() => setDeleteOfferTarget(null)}
+          isLoading={deleteOfferMutation.isPending}
+        />
+      )}
     </div>
   );
 }
@@ -772,18 +854,22 @@ function KPIBox({
   );
 }
 
-function CreateOfferModal({ onClose, onSubmit, isLoading, error }: {
+function CreateOfferModal({ onClose, onSubmit, isLoading, error, editMode, initialData }: {
   onClose: () => void;
   onSubmit: (data: { name: string; description: string; price_cents: number; billing_period: string; discount_percent: number | null; features: string[] }) => void;
   isLoading: boolean;
   error: string | null;
+  editMode?: boolean;
+  initialData?: SubscriptionOffer | null;
 }) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [priceEur, setPriceEur] = useState("9.99");
-  const [billingPeriod, setBillingPeriod] = useState("monthly");
-  const [discount, setDiscount] = useState("");
-  const [featuresText, setFeaturesText] = useState("Accès réseau EZDrive\nSupport prioritaire\nHistorique de charge illimité");
+  const [name, setName] = useState(initialData?.name ?? "");
+  const [description, setDescription] = useState(initialData?.description ?? "");
+  const [priceEur, setPriceEur] = useState(initialData ? (initialData.price_cents / 100).toFixed(2) : "9.99");
+  const [billingPeriod, setBillingPeriod] = useState(initialData?.billing_period ?? "monthly");
+  const [discount, setDiscount] = useState(initialData?.discount_percent?.toString() ?? "");
+  const [featuresText, setFeaturesText] = useState(
+    initialData?.benefits?.join("\n") ?? initialData?.features?.join("\n") ?? "Accès réseau EZDrive\nSupport prioritaire\nHistorique de charge illimité"
+  );
 
   const inputClass = "w-full px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
 
@@ -806,7 +892,7 @@ function CreateOfferModal({ onClose, onSubmit, isLoading, error }: {
       <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
         <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl">
           <div className="flex items-center justify-between p-5 border-b border-border">
-            <h2 className="font-heading font-bold text-lg">Créer une offre d'abonnement</h2>
+            <h2 className="font-heading font-bold text-lg">{editMode ? "Modifier l'offre" : "Créer une offre d'abonnement"}</h2>
             <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
               <X className="w-5 h-5 text-foreground-muted" />
             </button>
@@ -851,7 +937,7 @@ function CreateOfferModal({ onClose, onSubmit, isLoading, error }: {
               </button>
               <button type="submit" disabled={isLoading || !name.trim()} className="flex-1 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
                 {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-                Créer l'offre
+                {editMode ? "Enregistrer" : "Créer l'offre"}
               </button>
             </div>
           </form>
@@ -1027,6 +1113,45 @@ function CreateSubscriptionModal({ onClose, onSubmit, isLoading, error, offers }
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function DeleteOfferConfirmModal({
+  offer,
+  onConfirm,
+  onCancel,
+  isLoading,
+}: {
+  offer: SubscriptionOffer;
+  onConfirm: () => void;
+  onCancel: () => void;
+  isLoading: boolean;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onCancel} />
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+        <div className="bg-surface border border-border rounded-2xl w-full max-w-sm shadow-2xl p-6">
+          <h2 className="font-heading font-bold text-lg mb-2">Supprimer l'offre ?</h2>
+          <p className="text-sm text-foreground-muted mb-6">
+            Supprimer l'offre <strong className="text-foreground">{offer.name}</strong> ? Les abonnements existants ne seront pas affectés.
+          </p>
+          <div className="flex gap-3">
+            <button onClick={onCancel} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">
+              Annuler
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={isLoading}
+              className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-semibold hover:bg-red-600 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+            >
+              {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Supprimer
+            </button>
+          </div>
         </div>
       </div>
     </>

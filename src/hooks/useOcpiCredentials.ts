@@ -152,6 +152,65 @@ export function useRegenerateToken() {
   });
 }
 
+/** Update an OCPI partner */
+export function useUpdateOcpiPartner() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      id: string;
+      party_id: string;
+      country_code: string;
+      role: "CPO" | "EMSP" | "HUB";
+      versions_url: string;
+      gireve_country_code?: string;
+      gireve_party_id?: string;
+    }) => {
+      const { data, error } = await supabase
+        .from("ocpi_credentials")
+        .update({
+          party_id: params.party_id,
+          country_code: params.country_code,
+          role: params.role,
+          versions_url: params.versions_url,
+          gireve_country_code: params.gireve_country_code ?? params.country_code,
+          gireve_party_id: params.gireve_party_id ?? params.party_id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", params.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-subscriptions"] });
+      queryClient.invalidateQueries({ queryKey: ["ocpi-credentials"] });
+    },
+  });
+}
+
+/** Delete an OCPI partner */
+export function useDeleteOcpiPartner() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (partnerId: string) => {
+      const { error } = await supabase
+        .from("ocpi_credentials")
+        .delete()
+        .eq("id", partnerId);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-subscriptions"] });
+      queryClient.invalidateQueries({ queryKey: ["ocpi-credentials"] });
+    },
+  });
+}
+
 /** Test an OCPI endpoint (module) via edge function */
 export function useTestEndpoint() {
   return useMutation({

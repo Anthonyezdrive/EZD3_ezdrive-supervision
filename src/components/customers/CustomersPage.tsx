@@ -23,10 +23,12 @@ import {
   Loader2,
   BarChart3,
   Tag,
+  Trash2,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/contexts/ToastContext";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { useCpo } from "@/contexts/CpoContext";
@@ -833,6 +835,31 @@ function CustomerDetailDrawer({
     onSuccess: () => { setShowRetailPlan(false); onRefresh(); },
   });
 
+  // Soft delete
+  const { toast } = useToast();
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+  const displayNameForDelete = customer.full_name || customer.driver_external_id;
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("gfx_consumers")
+        .update({ status: "deleted", deleted_at: new Date().toISOString() })
+        .eq("driver_external_id", customer.driver_external_id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["customers"] });
+      toast("Client supprimé", "success");
+      setShowDeleteConfirm(false);
+      onClose();
+    },
+    onError: (err) => {
+      toast("Erreur : " + ((err as Error)?.message ?? "inconnue"), "error");
+    },
+  });
+
   const inputClass = "w-full px-3 py-2 bg-surface-elevated border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-border-focus transition-colors";
 
   return (
@@ -860,6 +887,9 @@ function CustomerDetailDrawer({
           <div className="flex items-center gap-1">
             <button onClick={() => setEditing(!editing)} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors" title="Modifier">
               <Pencil className="w-4 h-4 text-foreground-muted" />
+            </button>
+            <button onClick={() => setShowDeleteConfirm(true)} className="p-1.5 hover:bg-red-500/10 rounded-lg transition-colors" title="Supprimer">
+              <Trash2 className="w-4 h-4 text-red-400" />
             </button>
             <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
               <X className="w-5 h-5 text-foreground-muted" />
@@ -996,8 +1026,85 @@ function CustomerDetailDrawer({
               ID: <span className="font-mono text-foreground">{customer.id}</span>
             </p>
           </div>
+
+          {/* Supprimer le client */}
+          <div className="pt-3 border-t border-border">
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-xl text-sm font-medium hover:bg-red-500/20 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              Supprimer ce client
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Delete confirmation with name typing */}
+      {showDeleteConfirm && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[150]"
+            onClick={() => { if (!deleteMutation.isPending) setShowDeleteConfirm(false); }}
+          />
+          <div className="fixed inset-0 z-[151] flex items-center justify-center p-4">
+            <div
+              className="bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start gap-4 p-6 pb-0">
+                <div className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 bg-red-500/10">
+                  <Trash2 className="w-6 h-6 text-red-400" />
+                </div>
+                <div className="flex-1 min-w-0 pt-1">
+                  <h3 className="text-base font-heading font-bold text-foreground">Supprimer ce client</h3>
+                  <p className="text-sm text-foreground-muted mt-1.5 leading-relaxed">
+                    Pour confirmer, saisissez le nom du client : <strong className="text-foreground">{displayNameForDelete}</strong>
+                  </p>
+                  <input
+                    type="text"
+                    value={deleteConfirmName}
+                    onChange={(e) => setDeleteConfirmName(e.target.value)}
+                    placeholder={displayNameForDelete}
+                    className="w-full mt-3 px-3 py-2 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/40 focus:outline-none focus:border-red-500/50"
+                    autoFocus
+                  />
+                </div>
+                <button
+                  onClick={() => { if (!deleteMutation.isPending) { setShowDeleteConfirm(false); setDeleteConfirmName(""); } }}
+                  disabled={deleteMutation.isPending}
+                  className="p-1 text-foreground-muted hover:text-foreground rounded-lg transition-colors shrink-0 -mt-1 -mr-1 disabled:opacity-50"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="flex items-center justify-end gap-3 p-6">
+                <button
+                  onClick={() => { setShowDeleteConfirm(false); setDeleteConfirmName(""); }}
+                  disabled={deleteMutation.isPending}
+                  className="px-4 py-2.5 text-sm font-medium text-foreground-muted hover:text-foreground border border-border rounded-xl transition-colors disabled:opacity-50"
+                >
+                  Annuler
+                </button>
+                <button
+                  onClick={() => deleteMutation.mutate()}
+                  disabled={deleteMutation.isPending || deleteConfirmName !== displayNameForDelete}
+                  className="px-5 py-2.5 text-sm font-semibold text-white rounded-xl transition-colors disabled:opacity-50 min-w-[100px] bg-red-500 hover:bg-red-600"
+                >
+                  {deleteMutation.isPending ? (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Suppression...
+                    </span>
+                  ) : (
+                    "Supprimer"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }

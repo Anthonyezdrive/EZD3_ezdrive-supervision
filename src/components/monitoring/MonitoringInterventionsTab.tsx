@@ -12,15 +12,19 @@ import {
   Timer,
   RefreshCw,
   UserCheck,
+  Archive,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/contexts/ToastContext";
 import { SlideOver } from "@/components/ui/SlideOver";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   useInterventions as useInterventionsHook,
   useAvailableTechnicians,
   useCreateIntervention,
+  useUpdateIntervention,
+  useDeleteIntervention,
   useStartWork,
   useStopWork,
   type Intervention,
@@ -184,6 +188,7 @@ export default function InterventionsTab() {
   const [editing, setEditing] = useState<Intervention | null>(null);
   const [form, setForm] = useState(EMPTY_INTERVENTION);
   const [showReport, setShowReport] = useState<Intervention | null>(null);
+  const [archiveInterventionId, setArchiveInterventionId] = useState<string | null>(null);
 
   // Data queries
   const { data: interventions, isLoading } = useInterventionsHook();
@@ -194,6 +199,7 @@ export default function InterventionsTab() {
   const updateMutation = useUpdateIntervention();
   const startWorkMutation = useStartWork();
   const stopWorkMutation = useStopWork();
+  const deleteMutation = useDeleteIntervention();
 
   // Toast handlers for mutations
   useEffect(() => {
@@ -597,6 +603,15 @@ export default function InterventionsTab() {
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
+                    {intervention.status !== "cancelled" && (
+                      <button
+                        onClick={() => setArchiveInterventionId(intervention.id)}
+                        className="p-1.5 text-foreground-muted hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors"
+                        title="Archiver"
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -772,6 +787,32 @@ export default function InterventionsTab() {
           isLoading={stopWorkMutation.isPending}
         />
       )}
+
+      {/* Archive Confirm Dialog */}
+      <ConfirmDialog
+        open={!!archiveInterventionId}
+        title="Archiver cette intervention ?"
+        description="L'intervention sera marquée comme archivée et ne sera plus visible dans la liste active."
+        confirmLabel="Archiver"
+        loadingLabel="Archivage..."
+        variant="warning"
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (archiveInterventionId) {
+            deleteMutation.mutate(archiveInterventionId, {
+              onSuccess: () => {
+                toastSuccess("Intervention archivée");
+                setArchiveInterventionId(null);
+              },
+              onError: (err: Error) => {
+                toastError("Erreur", err.message);
+                setArchiveInterventionId(null);
+              },
+            });
+          }
+        }}
+        onCancel={() => setArchiveInterventionId(null)}
+      />
     </div>
   );
 }

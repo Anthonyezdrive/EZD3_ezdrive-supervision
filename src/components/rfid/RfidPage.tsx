@@ -38,6 +38,7 @@ import {
   Ban,
   ArrowRightLeft,
   Clock,
+  Trash2,
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -119,6 +120,7 @@ function formatTokenId(uid: string): string {
 
 export function RfidPage() {
   const { selectedCpoId } = useCpo();
+  const queryClient = useQueryClient();
 
   const { data: tokens, isLoading, isError, refetch } = useQuery<Token[]>({
     queryKey: ["gfx-tokens", selectedCpoId ?? "all"],
@@ -161,6 +163,9 @@ export function RfidPage() {
   const [topUpToken, setTopUpToken] = useState<Token | null>(null);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importLoading, setImportLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Token | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const { toast } = useToast();
 
   // KPIs
   const kpis = useMemo(() => {
@@ -182,6 +187,26 @@ export function RfidPage() {
     else { setSortKey(key); setSortDir("desc"); }
     setPage(1);
   }, [sortKey]);
+
+  async function handleDeleteToken() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      // Delete billing data first
+      await supabase.from("token_billing").delete().eq("token_uid", deleteTarget.token_uid);
+      // Then delete the token
+      const { error } = await supabase.from("gfx_tokens").delete().eq("id", deleteTarget.id);
+      if (error) throw error;
+      queryClient.invalidateQueries({ queryKey: ["gfx-tokens"] });
+      toast("Token supprimé", "success");
+      setDeleteTarget(null);
+      if (detail?.id === deleteTarget.id) setDetail(null);
+    } catch (err) {
+      toast("Erreur : " + (err instanceof Error ? err.message : "inconnue"), "error");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   // Filter
   const filtered = useMemo(() => {
@@ -409,14 +434,23 @@ export function RfidPage() {
                         {token.last_used_at ? formatRelativeDate(token.last_used_at) : "—"}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setTopUpToken(token); }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-medium hover:bg-primary/20 transition-colors"
-                          title="Créditer le solde prépayé"
-                        >
-                          <Wallet className="w-3 h-3" />
-                          Créditer
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setTopUpToken(token); }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-medium hover:bg-primary/20 transition-colors"
+                            title="Créditer le solde prépayé"
+                          >
+                            <Wallet className="w-3 h-3" />
+                            Créditer
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setDeleteTarget(token); }}
+                            className="inline-flex items-center p-1.5 text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
+                            title="Supprimer le token"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -490,6 +524,19 @@ export function RfidPage() {
           onSuccess={() => { setTopUpToken(null); refetch(); }}
         />
       )}
+
+      {/* Delete Token Confirm */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onConfirm={handleDeleteToken}
+        onCancel={() => setDeleteTarget(null)}
+        title="Supprimer ce token"
+        description={`Supprimer définitivement le token ${deleteTarget ? formatTokenId(deleteTarget.token_uid) : ""} ? Cette action supprimera aussi les données de facturation associées.`}
+        confirmLabel="Supprimer"
+        variant="danger"
+        loading={deleting}
+        loadingLabel="Suppression..."
+      />
 
       {/* Import CSV Modal */}
       {showImportCsv && (

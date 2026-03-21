@@ -7,7 +7,7 @@ import { useState, useMemo } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   Users, CreditCard, Zap, Activity, Search, Shield, ShieldOff,
-  Nfc, Download, ChevronDown, Loader2, User, UserMinus,
+  Nfc, Download, ChevronDown, Loader2, User, UserMinus, Pencil, X,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
@@ -126,6 +126,7 @@ export function B2BFleetPage() {
     action: "block" | "unblock";
   } | null>(null);
   const [confirmRemoveDriver, setConfirmRemoveDriver] = useState<Driver | null>(null);
+  const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
 
   // Fleet management ref for callback
   const handleDriversChanged = () => {
@@ -249,6 +250,43 @@ export function B2BFleetPage() {
     onError: () => {
       toastError("Erreur lors du retrait du conducteur");
       setConfirmRemoveDriver(null);
+    },
+  });
+
+  // -----------------------------------------------------------------------
+  // Edit driver mutation
+  // -----------------------------------------------------------------------
+
+  const editDriverMutation = useMutation({
+    mutationFn: async (form: {
+      driver_external_id: string;
+      first_name: string;
+      last_name: string;
+      email: string;
+      phone: string;
+      city: string;
+    }) => {
+      const fullName = `${form.first_name.trim()} ${form.last_name.trim()}`;
+      const { error } = await supabase
+        .from("all_consumers")
+        .update({
+          first_name: form.first_name.trim(),
+          last_name: form.last_name.trim(),
+          full_name: fullName,
+          email: form.email.trim() || null,
+          phone: form.phone.trim() || null,
+          city: form.city.trim() || null,
+        })
+        .eq("driver_external_id", form.driver_external_id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toastSuccess("Conducteur mis a jour");
+      queryClient.invalidateQueries({ queryKey: ["b2b-fleet-drivers"] });
+      setEditingDriver(null);
+    },
+    onError: (err: Error) => {
+      toastError(err.message || "Erreur lors de la mise a jour du conducteur");
     },
   });
 
@@ -560,16 +598,28 @@ export function B2BFleetPage() {
                           : "—"}
                       </td>
                       <td className={cn(tdClass, "text-right")}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirmRemoveDriver(d);
-                          }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
-                        >
-                          <UserMinus className="w-3.5 h-3.5" />
-                          Retirer
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingDriver(d);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-elevated border border-border text-foreground hover:bg-surface transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            Modifier
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmRemoveDriver(d);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                            Retirer
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -682,6 +732,23 @@ export function B2BFleetPage() {
         requests={tokenRequests}
         loading={tokenRequestsLoading}
       />
+
+      {/* ================================================================= */}
+      {/* Edit driver modal                                                  */}
+      {/* ================================================================= */}
+      {editingDriver && (
+        <EditDriverModal
+          driver={editingDriver}
+          onClose={() => setEditingDriver(null)}
+          onSubmit={(form) =>
+            editDriverMutation.mutate({
+              driver_external_id: editingDriver.driver_external_id,
+              ...form,
+            })
+          }
+          loading={editDriverMutation.isPending}
+        />
+      )}
 
       {/* ================================================================= */}
       {/* Driver detail drawer                                               */}
@@ -856,6 +923,154 @@ export function B2BFleetPage() {
         onConfirm={handleBlockConfirm}
         onCancel={() => setConfirmBlock(null)}
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Edit Driver Modal
+// ---------------------------------------------------------------------------
+
+function EditDriverModal({
+  driver,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  driver: Driver;
+  onClose: () => void;
+  onSubmit: (form: {
+    first_name: string;
+    last_name: string;
+    email: string;
+    phone: string;
+    city: string;
+  }) => void;
+  loading: boolean;
+}) {
+  const [form, setForm] = useState({
+    first_name: driver.first_name ?? "",
+    last_name: driver.last_name ?? "",
+    email: driver.email ?? "",
+    phone: driver.phone ?? "",
+    city: driver.city ?? "",
+  });
+
+  const inputClass =
+    "w-full px-3 py-2 text-sm bg-surface border border-border rounded-xl text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-2 focus:ring-primary/40";
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    onSubmit(form);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-heading font-semibold text-foreground">
+            Modifier le conducteur
+          </h3>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground-muted">
+                Prenom *
+              </label>
+              <input
+                type="text"
+                required
+                value={form.first_name}
+                onChange={(e) => setForm((f) => ({ ...f, first_name: e.target.value }))}
+                placeholder="Jean"
+                className={inputClass}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground-muted">
+                Nom *
+              </label>
+              <input
+                type="text"
+                required
+                value={form.last_name}
+                onChange={(e) => setForm((f) => ({ ...f, last_name: e.target.value }))}
+                placeholder="Dupont"
+                className={inputClass}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground-muted">
+              Email
+            </label>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+              placeholder="jean.dupont@entreprise.com"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground-muted">
+              Telephone
+            </label>
+            <input
+              type="tel"
+              value={form.phone}
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+              placeholder="+33 6 12 34 56 78"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground-muted">
+              Ville
+            </label>
+            <input
+              type="text"
+              value={form.city}
+              onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))}
+              placeholder="Paris"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors"
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !form.first_name.trim() || !form.last_name.trim()}
+              className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Enregistrer
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

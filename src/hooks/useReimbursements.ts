@@ -106,6 +106,33 @@ export function useAllReimbursementConfigs() {
   });
 }
 
+/** Cancel a reimbursement run (pending → hard delete, otherwise → soft cancel) */
+export function useDeleteReimbursementRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+      if (status === "pending") {
+        // Hard delete for pending runs
+        const { error } = await supabase
+          .from("reimbursement_runs")
+          .delete()
+          .eq("id", id);
+        if (error) throw error;
+      } else {
+        // Soft cancel for other statuses
+        const { error } = await supabase
+          .from("reimbursement_runs")
+          .update({ status: "cancelled" })
+          .eq("id", id);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["reimbursement-runs"] });
+    },
+  });
+}
+
 export function useUpdateReimbursementConfig() {
   const qc = useQueryClient();
   return useMutation({

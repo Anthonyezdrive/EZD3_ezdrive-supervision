@@ -7,10 +7,11 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   UserPlus, Nfc, X, Loader2, Clock, CheckCircle2, XCircle,
-  ChevronDown,
+  ChevronDown, CheckCircle, Trash2,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
 
@@ -464,11 +465,77 @@ export function TokenRequestsSection({
   requests: TokenRequest[];
   loading: boolean;
 }) {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const { success: toastSuccess, error: toastError } = useToast();
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Approve mutation
+  const approveMutation = useMutation({
+    mutationFn: async (requestId: string) => {
+      const { error } = await supabase
+        .from("token_requests")
+        .update({
+          status: "approved",
+          approved_by: user?.id ?? "unknown",
+          resolved_at: new Date().toISOString(),
+        })
+        .eq("id", requestId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toastSuccess("Demande approuvee");
+      queryClient.invalidateQueries({ queryKey: ["b2b-token-requests"] });
+    },
+    onError: (err: Error) => toastError(err.message || "Erreur lors de l'approbation"),
+  });
+
+  // Reject mutation
+  const rejectMutation = useMutation({
+    mutationFn: async (requestId: string) => {
+      const { error } = await supabase
+        .from("token_requests")
+        .update({
+          status: "rejected",
+          resolved_at: new Date().toISOString(),
+        })
+        .eq("id", requestId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toastSuccess("Demande refusee");
+      queryClient.invalidateQueries({ queryKey: ["b2b-token-requests"] });
+    },
+    onError: (err: Error) => toastError(err.message || "Erreur lors du refus"),
+  });
+
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (requestId: string) => {
+      const { error } = await supabase
+        .from("token_requests")
+        .delete()
+        .eq("id", requestId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toastSuccess("Demande supprimee");
+      queryClient.invalidateQueries({ queryKey: ["b2b-token-requests"] });
+      setConfirmDeleteId(null);
+    },
+    onError: (err: Error) => {
+      toastError(err.message || "Erreur lors de la suppression");
+      setConfirmDeleteId(null);
+    },
+  });
+
   if (loading) {
     return (
       <div className="bg-surface border border-border rounded-2xl p-6 h-[200px] animate-pulse" />
     );
   }
+
+  const deleteRequest = requests.find((r) => r.id === confirmDeleteId);
 
   return (
     <div className="space-y-4">
@@ -485,45 +552,104 @@ export function TokenRequestsSection({
                 <th className={thClass}>Motif</th>
                 <th className={thClass}>Statut</th>
                 <th className={thClass}>Date</th>
+                <th className={cn(thClass, "text-right")}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {requests.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-4 py-12 text-center text-foreground-muted text-sm"
                   >
                     Aucune demande de badge
                   </td>
                 </tr>
               ) : (
-                requests.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="border-b border-border/50 hover:bg-surface-elevated/50 transition-colors"
-                  >
-                    <td className={cn(tdClass, "font-medium")}>
-                      {r.driver_name}
-                    </td>
-                    <td className={tdClass}>
-                      {r.reason || "—"}
-                    </td>
-                    <td className={tdClass}>
-                      {requestStatusBadge(r.status)}
-                    </td>
-                    <td className={tdClass}>
-                      {r.created_at
-                        ? formatRelativeTime(r.created_at)
-                        : "—"}
-                    </td>
-                  </tr>
-                ))
+                requests.map((r) => {
+                  const isPending = (r.status?.toLowerCase() ?? "pending") === "pending";
+                  return (
+                    <tr
+                      key={r.id}
+                      className="border-b border-border/50 hover:bg-surface-elevated/50 transition-colors"
+                    >
+                      <td className={cn(tdClass, "font-medium")}>
+                        {r.driver_name}
+                      </td>
+                      <td className={tdClass}>
+                        {r.reason || "—"}
+                      </td>
+                      <td className={tdClass}>
+                        {requestStatusBadge(r.status)}
+                      </td>
+                      <td className={tdClass}>
+                        {r.created_at
+                          ? formatRelativeTime(r.created_at)
+                          : "—"}
+                      </td>
+                      <td className={cn(tdClass, "text-right")}>
+                        <div className="flex items-center justify-end gap-1.5">
+                          {isPending && (
+                            <>
+                              <button
+                                onClick={() => approveMutation.mutate(r.id)}
+                                disabled={approveMutation.isPending || rejectMutation.isPending}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                                title="Approuver"
+                              >
+                                <CheckCircle className="w-3.5 h-3.5" />
+                                Approuver
+                              </button>
+                              <button
+                                onClick={() => rejectMutation.mutate(r.id)}
+                                disabled={approveMutation.isPending || rejectMutation.isPending}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                                title="Refuser"
+                              >
+                                <XCircle className="w-3.5 h-3.5" />
+                                Refuser
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={() => setConfirmDeleteId(r.id)}
+                            disabled={deleteMutation.isPending}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                            title="Supprimer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Confirm delete dialog */}
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Supprimer cette demande ?"
+        description={
+          deleteRequest
+            ? `Supprimer la demande de badge pour ${deleteRequest.driver_name} ? Cette action est irreversible.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        cancelLabel="Annuler"
+        variant="danger"
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (confirmDeleteId) {
+            deleteMutation.mutate(confirmDeleteId);
+          }
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </div>
   );
 }

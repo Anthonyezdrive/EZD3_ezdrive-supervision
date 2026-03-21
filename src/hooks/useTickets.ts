@@ -220,6 +220,27 @@ export function useAddComment() {
   });
 }
 
+/** Archive (soft delete) a ticket */
+export function useDeleteTicket() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (ticketId: string) => {
+      const { error } = await supabase
+        .from("support_tickets")
+        .update({
+          status: "archived",
+          deleted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", ticketId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["support-tickets"] });
+    },
+  });
+}
+
 /** Close a ticket */
 export function useCloseTicket() {
   const queryClient = useQueryClient();

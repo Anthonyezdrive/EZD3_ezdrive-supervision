@@ -20,10 +20,13 @@ import {
   Globe,
   RefreshCcw,
   Send,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
-import { apiPost, apiPut } from "@/lib/api";
+import { apiPost, apiPut, apiDelete } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/contexts/ToastContext";
 import type { Station } from "@/types/station";
 import { OcpiPushModal } from "@/components/ocpi/OcpiPushModal";
 import { LocationPhotoManager } from "@/components/locations/LocationPhotoManager";
@@ -148,7 +151,10 @@ function LocationListView({
   const [pushLocationId, setPushLocationId] = useState<string | undefined>(undefined);
   const [syncingTokens, setSyncingTokens] = useState(false);
   const [syncTokensResult, setSyncTokensResult] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<LocationRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // Column search filters
   const [filterName, setFilterName] = useState("");
@@ -214,6 +220,30 @@ function LocationListView({
       setTimeout(() => setSyncTokensResult(null), 5000);
     } finally {
       setSyncingTokens(false);
+    }
+  }
+
+  async function handleDeleteLocation() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await apiDelete("admin-stations/" + deleteTarget.id);
+      queryClient.invalidateQueries({ queryKey: ["stations"] });
+      toast("Location supprimée avec succès", "success");
+      setDeleteTarget(null);
+    } catch (err) {
+      // Fallback to direct Supabase delete
+      try {
+        const { error } = await supabase.from("stations").delete().eq("id", deleteTarget.id);
+        if (error) throw error;
+        queryClient.invalidateQueries({ queryKey: ["stations"] });
+        toast("Location supprimée avec succès", "success");
+        setDeleteTarget(null);
+      } catch (fallbackErr) {
+        toast("Erreur lors de la suppression : " + (fallbackErr instanceof Error ? fallbackErr.message : "inconnue"), "error");
+      }
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -378,6 +408,13 @@ function LocationListView({
                       >
                         Editer
                       </button>
+                      <button
+                        onClick={() => setDeleteTarget(row)}
+                        className="flex items-center gap-1 px-2 py-1 text-red-400 rounded-lg text-xs font-medium hover:bg-red-500/10 transition-colors"
+                        title="Supprimer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -415,6 +452,19 @@ function LocationListView({
         open={showPushModal}
         onClose={() => setShowPushModal(false)}
         locationId={pushLocationId}
+      />
+
+      {/* Delete Location Confirm */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onConfirm={handleDeleteLocation}
+        onCancel={() => setDeleteTarget(null)}
+        title="Supprimer la location"
+        description={`Supprimer la location ${deleteTarget?.name ?? ""} ? Cette action est irréversible.`}
+        confirmLabel="Supprimer"
+        variant="danger"
+        loading={deleting}
+        loadingLabel="Suppression..."
       />
     </div>
   );

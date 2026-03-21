@@ -25,11 +25,17 @@ import {
   Plus,
   Plug,
   Wifi,
+  Pencil,
+  Trash2,
+  Loader2,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/contexts/ToastContext";
 import { useCpo } from "@/contexts/CpoContext";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useUpdateOcpiPartner, useDeleteOcpiPartner } from "@/hooks/useOcpiCredentials";
 import { OcpiCredentialWizard } from "./OcpiCredentialWizard";
 import { OcpiEndpointTest } from "./OcpiEndpointTest";
 import { OcpiHandshakeModal } from "./OcpiHandshakeModal";
@@ -146,6 +152,14 @@ export function OcpiPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [handshakeSubId, setHandshakeSubId] = useState<string | null>(null);
   const [testingSubId, setTestingSubId] = useState<string | null>(null);
+
+  // Edit / Delete state
+  const [editingCredential, setEditingCredential] = useState<OcpiCredential | null>(null);
+  const [deletingCredential, setDeletingCredential] = useState<OcpiCredential | null>(null);
+
+  // Edit / Delete mutations
+  const updatePartnerMutation = useUpdateOcpiPartner();
+  const deletePartnerMutation = useDeleteOcpiPartner();
 
   // ── Data ──
   const { data: credentials, isLoading, isError, refetch, dataUpdatedAt } = useQuery<OcpiCredential[]>({
@@ -894,6 +908,29 @@ export function OcpiPage() {
                           <Plug className="w-3 h-3" />
                           Handshake
                         </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const cred = credentials?.find((c) => c.id === sub.id);
+                            if (cred) setEditingCredential(cred);
+                          }}
+                          className="flex items-center gap-1 px-2.5 py-1.5 bg-surface-elevated border border-border rounded-lg text-xs font-medium hover:bg-surface transition-colors"
+                          title="Modifier"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          Modifier
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const cred = credentials?.find((c) => c.id === sub.id);
+                            if (cred) setDeletingCredential(cred);
+                          }}
+                          className="flex items-center gap-1 px-2.5 py-1.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg text-xs font-medium hover:bg-red-500/20 transition-colors"
+                          title="Supprimer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -944,6 +981,194 @@ export function OcpiPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Edit OCPI Partner Modal */}
+      {editingCredential && (
+        <EditOcpiPartnerModal
+          credential={editingCredential}
+          onClose={() => setEditingCredential(null)}
+          onSubmit={(form) => {
+            updatePartnerMutation.mutate(
+              { id: editingCredential.id, ...form },
+              {
+                onSuccess: () => {
+                  toastSuccess("Partenaire OCPI mis a jour");
+                  setEditingCredential(null);
+                  refetch();
+                },
+                onError: (err: Error) => toastError(err.message || "Erreur lors de la mise a jour"),
+              }
+            );
+          }}
+          loading={updatePartnerMutation.isPending}
+        />
+      )}
+
+      {/* Delete OCPI Partner Confirm */}
+      <ConfirmDialog
+        open={deletingCredential !== null}
+        title="Supprimer le partenaire OCPI ?"
+        description={
+          deletingCredential
+            ? `Supprimer le partenaire OCPI ${deletingCredential.party_id} ? Les tokens et CDRs associes seront conserves.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        cancelLabel="Annuler"
+        variant="danger"
+        loading={deletePartnerMutation.isPending}
+        onConfirm={() => {
+          if (deletingCredential) {
+            deletePartnerMutation.mutate(deletingCredential.id, {
+              onSuccess: () => {
+                toastSuccess("Partenaire OCPI supprime");
+                setDeletingCredential(null);
+                refetch();
+              },
+              onError: (err: Error) => {
+                toastError(err.message || "Erreur lors de la suppression");
+                setDeletingCredential(null);
+              },
+            });
+          }
+        }}
+        onCancel={() => setDeletingCredential(null)}
+      />
+    </div>
+  );
+}
+
+// ── Edit OCPI Partner Modal ──────────────────────────────────
+
+function EditOcpiPartnerModal({
+  credential,
+  onClose,
+  onSubmit,
+  loading,
+}: {
+  credential: OcpiCredential;
+  onClose: () => void;
+  onSubmit: (form: {
+    party_id: string;
+    country_code: string;
+    role: "CPO" | "EMSP" | "HUB";
+    versions_url: string;
+  }) => void;
+  loading: boolean;
+}) {
+  const [form, setForm] = useState({
+    party_id: credential.party_id,
+    country_code: credential.country_code,
+    role: credential.role as "CPO" | "EMSP" | "HUB",
+    versions_url: credential.versions_url ?? "",
+  });
+
+  const inputClass =
+    "w-full px-3 py-2 text-sm bg-surface border border-border rounded-xl text-foreground placeholder:text-foreground-muted focus:outline-none focus:ring-2 focus:ring-primary/40";
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    onSubmit(form);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 space-y-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-heading font-semibold text-foreground">
+            Modifier le partenaire OCPI
+          </h3>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-foreground-muted hover:text-foreground hover:bg-surface-elevated transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground-muted">
+                Party ID *
+              </label>
+              <input
+                type="text"
+                required
+                value={form.party_id}
+                onChange={(e) => setForm((f) => ({ ...f, party_id: e.target.value }))}
+                placeholder="EZD"
+                className={inputClass}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-foreground-muted">
+                Code pays *
+              </label>
+              <input
+                type="text"
+                required
+                maxLength={2}
+                value={form.country_code}
+                onChange={(e) => setForm((f) => ({ ...f, country_code: e.target.value.toUpperCase() }))}
+                placeholder="FR"
+                className={inputClass}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground-muted">
+              Role *
+            </label>
+            <select
+              required
+              value={form.role}
+              onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as "CPO" | "EMSP" | "HUB" }))}
+              className={cn(inputClass, "appearance-none cursor-pointer")}
+            >
+              <option value="CPO">CPO</option>
+              <option value="EMSP">EMSP</option>
+              <option value="HUB">HUB</option>
+            </select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-foreground-muted">
+              Versions URL
+            </label>
+            <input
+              type="url"
+              value={form.versions_url}
+              onChange={(e) => setForm((f) => ({ ...f, versions_url: e.target.value }))}
+              placeholder="https://ocpi.partenaire.com/versions"
+              className={inputClass}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors"
+            >
+              Annuler
+            </button>
+            <button
+              type="submit"
+              disabled={loading || !form.party_id.trim() || !form.country_code.trim()}
+              className="inline-flex items-center gap-2 px-5 py-2 text-sm font-medium bg-primary text-primary-foreground rounded-xl hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Enregistrer
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

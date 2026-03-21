@@ -20,6 +20,7 @@ import {
   Calculator,
   History,
   Layers,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TariffVisualBuilder } from "./TariffVisualBuilder";
@@ -80,6 +81,9 @@ export function TariffsPage() {
   const [deleteTarget, setDeleteTarget] = useState<StationTariffRow | null>(null);
   const [showSimulateModal, setShowSimulateModal] = useState(false);
   const [showBulkAssignModal, setShowBulkAssignModal] = useState(false);
+  const [editingOcpiTariff, setEditingOcpiTariff] = useState<OcpiTariff | null>(null);
+  const [deleteOcpiTarget, setDeleteOcpiTarget] = useState<OcpiTariff | null>(null);
+  const [editingAssignment, setEditingAssignment] = useState<StationTariffRow | null>(null);
 
   // ── Resolve station IDs for selected CPO ──
   const { data: cpoStationIds } = useQuery({
@@ -218,6 +222,68 @@ export function TariffsPage() {
       queryClient.invalidateQueries({ queryKey: ["station-tariffs"] });
       toastSuccess(`Tarif assigne a ${count} station(s)`);
       setShowBulkAssignModal(false);
+    },
+    onError: (err: Error) => toastError(err.message),
+  });
+
+  // ── Update OCPI tariff mutation ──
+  const updateOcpiMutation = useMutation({
+    mutationFn: async (data: { id: string; tariff_id: string; currency: string; type: string | null; elements: unknown }) => {
+      const { error } = await supabase.from("ocpi_tariffs").update({
+        tariff_id: data.tariff_id,
+        currency: data.currency,
+        type: data.type,
+        elements: data.elements,
+        last_updated: new Date().toISOString(),
+      }).eq("id", data.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-tariffs"] });
+      queryClient.invalidateQueries({ queryKey: ["station-tariffs"] });
+      toastSuccess("Tarif OCPI modifié avec succès");
+      setEditingOcpiTariff(null);
+    },
+    onError: (err: Error) => toastError(err.message),
+  });
+
+  // ── Delete OCPI tariff mutation ──
+  const deleteOcpiMutation = useMutation({
+    mutationFn: async (id: string) => {
+      // First remove orphan station_tariffs assignments
+      const { error: unlinkError } = await supabase.from("station_tariffs").delete().eq("tariff_id", id);
+      if (unlinkError) throw unlinkError;
+      const { error } = await supabase.from("ocpi_tariffs").delete().eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["ocpi-tariffs"] });
+      queryClient.invalidateQueries({ queryKey: ["station-tariffs"] });
+      queryClient.invalidateQueries({ queryKey: ["tariffs-cpo-ocpi-ids"] });
+      toastSuccess("Tarif OCPI supprimé avec succès");
+      setDeleteOcpiTarget(null);
+    },
+    onError: (err: Error) => toastError(err.message),
+  });
+
+  // ── Update station tariff assignment mutation ──
+  const updateAssignmentMutation = useMutation({
+    mutationFn: async (data: { id: string; tariff_id: string; connector_type: string; priority: number; valid_from: string | null; valid_to: string | null }) => {
+      const { error } = await supabase.from("station_tariffs").update({
+        tariff_id: data.tariff_id,
+        connector_type: data.connector_type,
+        priority: data.priority,
+        valid_from: data.valid_from || null,
+        valid_to: data.valid_to || null,
+        updated_at: new Date().toISOString(),
+      }).eq("id", data.id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["station-tariffs"] });
+      queryClient.invalidateQueries({ queryKey: ["tariffs-cpo-ocpi-ids"] });
+      toastSuccess("Affectation modifiée avec succès");
+      setEditingAssignment(null);
     },
     onError: (err: Error) => toastError(err.message),
   });
@@ -384,10 +450,17 @@ export function TariffsPage() {
           tariffs={filteredStation}
           isLoading={stLoading}
           onDelete={(t) => setDeleteTarget(t)}
+          onEdit={(t) => setEditingAssignment(t)}
           dataUpdatedAt={stDataUpdatedAt}
         />
       ) : (
-        <OcpiTariffsTable tariffs={filteredOcpi} isLoading={ocpiLoading} onDuplicate={(t) => duplicateMutation.mutate(t)} />
+        <OcpiTariffsTable
+          tariffs={filteredOcpi}
+          isLoading={ocpiLoading}
+          onDuplicate={(t) => duplicateMutation.mutate(t)}
+          onEdit={(t) => setEditingOcpiTariff(t)}
+          onDelete={(t) => setDeleteOcpiTarget(t)}
+        />
       )}
 
       {/* Assign Modal */}
@@ -439,6 +512,39 @@ export function TariffsPage() {
           isLoading={bulkAssignMutation.isPending}
         />
       )}
+
+      {/* Edit OCPI Tariff Modal */}
+      {editingOcpiTariff && (
+        <EditOcpiTariffModal
+          tariff={editingOcpiTariff}
+          onClose={() => setEditingOcpiTariff(null)}
+          onSave={(data) => updateOcpiMutation.mutate(data)}
+          isLoading={updateOcpiMutation.isPending}
+          error={(updateOcpiMutation.error as Error | null)?.message ?? null}
+        />
+      )}
+
+      {/* Delete OCPI Tariff Confirmation */}
+      {deleteOcpiTarget && (
+        <DeleteOcpiTariffConfirmModal
+          tariff={deleteOcpiTarget}
+          assignmentCount={(stationTariffs ?? []).filter((st) => st.tariff_id === deleteOcpiTarget.id).length}
+          onConfirm={() => deleteOcpiMutation.mutate(deleteOcpiTarget.id)}
+          onCancel={() => setDeleteOcpiTarget(null)}
+          isLoading={deleteOcpiMutation.isPending}
+        />
+      )}
+
+      {/* Edit Station Tariff Assignment Modal */}
+      {editingAssignment && (
+        <EditAssignmentModal
+          assignment={editingAssignment}
+          onClose={() => setEditingAssignment(null)}
+          onSave={(data) => updateAssignmentMutation.mutate(data)}
+          isLoading={updateAssignmentMutation.isPending}
+          error={(updateAssignmentMutation.error as Error | null)?.message ?? null}
+        />
+      )}
     </div>
   );
 }
@@ -449,11 +555,13 @@ function StationTariffsTable({
   tariffs,
   isLoading,
   onDelete,
+  onEdit,
   dataUpdatedAt,
 }: {
   tariffs: StationTariffRow[];
   isLoading: boolean;
   onDelete: (t: StationTariffRow) => void;
+  onEdit: (t: StationTariffRow) => void;
   dataUpdatedAt: number;
 }) {
   if (isLoading) {
@@ -555,13 +663,22 @@ function StationTariffsTable({
                     {validityLabel}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => onDelete(t)}
-                      className="p-1.5 text-foreground-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                      title="Supprimer l'affectation"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => onEdit(t)}
+                        className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                        title="Modifier l'affectation"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => onDelete(t)}
+                        className="p-1.5 text-foreground-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                        title="Supprimer l'affectation"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -607,10 +724,14 @@ function OcpiTariffsTable({
   tariffs,
   isLoading,
   onDuplicate,
+  onEdit,
+  onDelete,
 }: {
   tariffs: OcpiTariff[];
   isLoading: boolean;
   onDuplicate?: (t: OcpiTariff) => void;
+  onEdit?: (t: OcpiTariff) => void;
+  onDelete?: (t: OcpiTariff) => void;
 }) {
   if (isLoading) {
     return (
@@ -696,13 +817,29 @@ function OcpiTariffsTable({
                       : new Date(t.created_at).toLocaleDateString("fr-FR")}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => onDuplicate?.(t)}
-                      title="Dupliquer ce tarif"
-                      className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => onEdit?.(t)}
+                        title="Modifier ce tarif"
+                        className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => onDuplicate?.(t)}
+                        title="Dupliquer ce tarif"
+                        className="p-1.5 text-foreground-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => onDelete?.(t)}
+                        title="Supprimer ce tarif"
+                        className="p-1.5 text-foreground-muted hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -1218,5 +1355,315 @@ function BulkAssignModal({
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Edit OCPI Tariff Modal ─────────────────────────────
+
+function EditOcpiTariffModal({
+  tariff,
+  onClose,
+  onSave,
+  isLoading,
+  error,
+}: {
+  tariff: OcpiTariff;
+  onClose: () => void;
+  onSave: (data: { id: string; tariff_id: string; currency: string; type: string | null; elements: unknown }) => void;
+  isLoading: boolean;
+  error: string | null;
+}) {
+  const [tariffId, setTariffId] = useState(tariff.tariff_id);
+  const [currency, setCurrency] = useState(tariff.currency);
+  const [tariffType, setTariffType] = useState(tariff.type ?? "REGULAR");
+  const [tariffValue, setTariffValue] = useState({
+    elements: Array.isArray(tariff.elements) ? tariff.elements : [{ price_components: [{ type: "ENERGY", price: 0.35, vat: 20, step_size: 1 }] }],
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!tariffId.trim()) return;
+    onSave({
+      id: tariff.id,
+      tariff_id: tariffId.trim().toUpperCase(),
+      currency,
+      type: tariffType,
+      elements: tariffValue.elements,
+    });
+  }
+
+  const inputClass = "w-full px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-x-4 top-[3%] bottom-[3%] md:inset-x-auto md:left-1/2 md:-translate-x-1/2 md:w-[740px] bg-surface border border-border rounded-2xl z-50 flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <h2 className="font-heading font-bold text-lg">Modifier le tarif OCPI</h2>
+            <p className="text-xs text-foreground-muted mt-0.5">Modification de {tariff.tariff_id}</p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
+            <X className="w-5 h-5 text-foreground-muted" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div>
+            <p className="text-xs font-semibold text-foreground-muted uppercase tracking-wider mb-3">Identification</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">ID tarif *</label>
+                <input
+                  type="text"
+                  value={tariffId}
+                  onChange={(e) => setTariffId(e.target.value)}
+                  placeholder="STANDARD-AC"
+                  className={cn(inputClass, "font-mono uppercase")}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Devise</label>
+                <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputClass}>
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Type</label>
+                <select value={tariffType} onChange={(e) => setTariffType(e.target.value)} className={inputClass}>
+                  <option value="REGULAR">Régulier</option>
+                  <option value="AD_HOC_PAYMENT">Paiement ad hoc</option>
+                  <option value="PROFILE_GREEN">Profil vert</option>
+                  <option value="PROFILE_CHEAP">Profil économique</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <TariffVisualBuilder
+            value={tariffValue}
+            onChange={setTariffValue}
+            showJsonToggle={true}
+          />
+
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <p className="text-xs text-red-400">{error}</p>
+            </div>
+          )}
+        </form>
+
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border">
+          <button onClick={onClose} className="px-4 py-2.5 text-sm font-medium text-foreground-muted hover:text-foreground transition-colors">
+            Annuler
+          </button>
+          <button
+            onClick={(e) => handleSubmit(e as any)}
+            disabled={isLoading || !tariffId.trim()}
+            className="flex items-center gap-2 px-5 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+            Enregistrer
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Delete OCPI Tariff Confirmation Modal ──────────────
+
+function DeleteOcpiTariffConfirmModal({
+  tariff,
+  assignmentCount,
+  onConfirm,
+  onCancel,
+  isLoading,
+}: {
+  tariff: OcpiTariff;
+  assignmentCount: number;
+  onConfirm: () => void;
+  onCancel: () => void;
+  isLoading: boolean;
+}) {
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onCancel} />
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+        <div className="bg-surface border border-border rounded-2xl w-full max-w-sm shadow-2xl p-6">
+          <h2 className="font-heading font-bold text-lg mb-2">Supprimer ce tarif OCPI ?</h2>
+          <p className="text-sm text-foreground-muted mb-4">
+            Le tarif <strong className="text-foreground">{tariff.tariff_id}</strong> sera définitivement supprimé.
+          </p>
+          {assignmentCount > 0 && (
+            <div className="flex items-center gap-2 p-3 bg-warning/10 border border-warning/20 rounded-xl mb-4">
+              <AlertCircle className="w-4 h-4 text-warning shrink-0" />
+              <p className="text-xs text-warning">
+                {assignmentCount} affectation{assignmentCount > 1 ? "s" : ""} station liée{assignmentCount > 1 ? "s" : ""} sera{assignmentCount > 1 ? "ont" : ""} également supprimée{assignmentCount > 1 ? "s" : ""}.
+              </p>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <button onClick={onCancel} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">
+              Annuler
+            </button>
+            <button
+              onClick={onConfirm}
+              disabled={isLoading}
+              className="flex-1 py-2.5 bg-red-500 text-white rounded-xl text-sm font-semibold hover:bg-red-600 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+            >
+              {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+              Supprimer
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Edit Station Tariff Assignment Modal ───────────────
+
+function EditAssignmentModal({
+  assignment,
+  onClose,
+  onSave,
+  isLoading,
+  error,
+}: {
+  assignment: StationTariffRow;
+  onClose: () => void;
+  onSave: (data: { id: string; tariff_id: string; connector_type: string; priority: number; valid_from: string | null; valid_to: string | null }) => void;
+  isLoading: boolean;
+  error: string | null;
+}) {
+  const [form, setForm] = useState({
+    tariff_id: assignment.tariff_id ?? "",
+    connector_type: assignment.connector_type ?? "AC",
+    priority: assignment.priority,
+    valid_from: assignment.valid_from ? assignment.valid_from.slice(0, 10) : "",
+    valid_to: assignment.valid_to ? assignment.valid_to.slice(0, 10) : "",
+  });
+
+  // Fetch OCPI tariffs for dropdown
+  const { data: availableTariffs } = useQuery({
+    queryKey: ["ocpi-tariffs-select-edit"],
+    queryFn: async () => {
+      const { data } = await supabase.from("ocpi_tariffs").select("id, tariff_id, currency").order("tariff_id");
+      return data ?? [];
+    },
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.tariff_id) return;
+    onSave({
+      id: assignment.id,
+      tariff_id: form.tariff_id,
+      connector_type: form.connector_type,
+      priority: form.priority,
+      valid_from: form.valid_from || null,
+      valid_to: form.valid_to || null,
+    });
+  }
+
+  const inputClass = "w-full px-3 py-2.5 bg-surface-elevated border border-border rounded-xl text-sm text-foreground placeholder:text-foreground-muted/50 focus:outline-none focus:border-primary/50 transition-colors";
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
+      <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
+        <div className="bg-surface border border-border rounded-2xl w-full max-w-lg shadow-2xl">
+          <div className="flex items-center justify-between p-5 border-b border-border">
+            <div>
+              <h2 className="font-heading font-bold text-lg">Modifier l'affectation</h2>
+              <p className="text-xs text-foreground-muted mt-0.5">Station : {assignment.stations?.name ?? "—"}</p>
+            </div>
+            <button onClick={onClose} className="p-1.5 hover:bg-surface-elevated rounded-lg transition-colors">
+              <X className="w-5 h-5 text-foreground-muted" />
+            </button>
+          </div>
+          <form onSubmit={handleSubmit} className="p-5 space-y-4">
+            <div>
+              <label className="block text-xs text-foreground-muted mb-1.5">Tarif OCPI *</label>
+              <select
+                required
+                value={form.tariff_id}
+                onChange={(e) => setForm({ ...form, tariff_id: e.target.value })}
+                className={inputClass}
+              >
+                <option value="">-- Sélectionner un tarif --</option>
+                {(availableTariffs ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.tariff_id} ({t.currency})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Type connecteur</label>
+                <select
+                  value={form.connector_type}
+                  onChange={(e) => setForm({ ...form, connector_type: e.target.value })}
+                  className={inputClass}
+                >
+                  <option value="AC">AC</option>
+                  <option value="DC">DC</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Priorité</label>
+                <input
+                  type="number"
+                  value={form.priority}
+                  onChange={(e) => setForm({ ...form, priority: Number(e.target.value) })}
+                  className={inputClass}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Valide à partir du</label>
+                <input
+                  type="date"
+                  value={form.valid_from}
+                  onChange={(e) => setForm({ ...form, valid_from: e.target.value })}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-foreground-muted mb-1.5">Valide jusqu'au</label>
+                <input
+                  type="date"
+                  value={form.valid_to}
+                  onChange={(e) => setForm({ ...form, valid_to: e.target.value })}
+                  className={inputClass}
+                />
+              </div>
+            </div>
+            {error && (
+              <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+            )}
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={onClose} className="flex-1 py-2.5 border border-border rounded-xl text-sm text-foreground-muted hover:text-foreground transition-colors">
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={isLoading || !form.tariff_id}
+                className="flex-1 py-2.5 bg-primary text-background rounded-xl text-sm font-semibold hover:bg-primary/90 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+              >
+                {isLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                Enregistrer
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </>
   );
 }
