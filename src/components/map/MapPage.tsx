@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap, useMapEvents } from "react-leaflet";
 import type { LatLngBoundsExpression } from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { Search, X, MapPin, Zap } from "lucide-react";
+import { Search, X, MapPin, Zap, Database } from "lucide-react";
 import { useStations } from "@/hooks/useStations";
 import { useCPOs } from "@/hooks/useCPOs";
 import { useTerritories } from "@/hooks/useTerritories";
@@ -11,6 +11,16 @@ import { OCPP_STATUS_CONFIG } from "@/lib/constants";
 import { StationDetailDrawer } from "@/components/stations/StationDetailDrawer";
 import type { Station, OCPPStatus } from "@/types/station";
 import { PageHelp } from "@/components/ui/PageHelp";
+
+// ── Source badge config ─────────────────────────────────────────────
+const SOURCE_CONFIG = {
+  road: { label: "Road.io", color: "#3B82F6", bg: "#3B82F620", ring: "#3B82F6" },
+  gfx:  { label: "GreenFlux", color: "#A855F7", bg: "#A855F720", ring: "#A855F7" },
+} as const;
+
+function getSourceConfig(source: string) {
+  return SOURCE_CONFIG[source as keyof typeof SOURCE_CONFIG] ?? { label: source, color: "#6B7280", bg: "#6B728020", ring: "#6B7280" };
+}
 
 // ── Nominatim geocoding result ──────────────────────────────────────
 interface NominatimResult {
@@ -393,9 +403,9 @@ export function MapPage() {
                   pathOptions={{
                     fillColor: cfg.color,
                     fillOpacity: isCluster ? 0.7 : 0.9,
-                    color: "#fff",
-                    weight: isCluster ? 2.5 : 1.5,
-                    opacity: 0.6,
+                    color: isCluster ? "#fff" : getSourceConfig(station.source).ring,
+                    weight: isCluster ? 2.5 : 2,
+                    opacity: isCluster ? 0.6 : 0.8,
                   }}
                 >
                   <Popup minWidth={200}>
@@ -408,7 +418,10 @@ export function MapPage() {
                           {cluster.stations.slice(0, 10).map((s) => (
                             <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
                               <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: OCPP_STATUS_CONFIG[s.ocpp_status].color, flexShrink: 0 }} />
-                              <span style={{ cursor: "pointer", color: "#ccc" }} onClick={() => setSelectedStation(s)}>{s.name}</span>
+                              <span style={{ cursor: "pointer", color: "#ccc", flex: 1 }} onClick={() => setSelectedStation(s)}>{s.name}</span>
+                              <span style={{ fontSize: 9, color: getSourceConfig(s.source).color, fontWeight: 600, flexShrink: 0 }}>
+                                {getSourceConfig(s.source).label === "Road.io" ? "R" : "G"}
+                              </span>
                             </div>
                           ))}
                           {cluster.stations.length > 10 && <p style={{ color: "#666", marginTop: 4 }}>+{cluster.stations.length - 10} autres...</p>}
@@ -425,10 +438,21 @@ export function MapPage() {
                             .filter(Boolean)
                             .join(" · ")}
                         </p>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                           <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", backgroundColor: cfg.color, flexShrink: 0 }} />
                           <span style={{ fontSize: 11, color: cfg.color, fontWeight: 600 }}>{cfg.label}</span>
                           {station.cpo_name && <span style={{ fontSize: 10, color: "#999" }}>· {station.cpo_name}</span>}
+                        </div>
+                        <div style={{ marginBottom: 10 }}>
+                          <span style={{
+                            display: "inline-flex", alignItems: "center", gap: 3,
+                            fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                            backgroundColor: getSourceConfig(station.source).bg,
+                            color: getSourceConfig(station.source).color,
+                          }}>
+                            <Database style={{ width: 10, height: 10 }} />
+                            {getSourceConfig(station.source).label}
+                          </span>
                         </div>
                         {station.max_power_kw && (
                           <p style={{ fontSize: 10, color: "#888", margin: "0 0 8px" }}>Puissance max : {station.max_power_kw} kW</p>
@@ -477,6 +501,27 @@ export function MapPage() {
                 </div>
               );
             })}
+            <div className="border-t border-white/10 mt-2 pt-2">
+              <p className="text-[10px] font-semibold text-foreground-muted uppercase tracking-wider mb-2">
+                Source (contour)
+              </p>
+              {(["road", "gfx"] as const).map((src) => {
+                const srcCfg = getSourceConfig(src);
+                const count = mappableStations.filter((st) => st.source === src).length;
+                return (
+                  <div key={src} className="flex items-center gap-2.5">
+                    <span
+                      className="w-3 h-3 rounded-full shrink-0"
+                      style={{ border: `2.5px solid ${srcCfg.ring}`, backgroundColor: "transparent" }}
+                    />
+                    <span className="text-xs text-foreground-muted">{srcCfg.label}</span>
+                    <span className="text-xs font-semibold text-foreground ml-auto pl-3">
+                      {count}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>
