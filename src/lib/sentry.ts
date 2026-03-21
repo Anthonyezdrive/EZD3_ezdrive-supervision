@@ -30,9 +30,13 @@ export function initSentry() {
       "Network request failed",
       "Load failed",
       "Failed to fetch",
+      "AbortError",
+      "ChunkLoadError",
     ],
 
     beforeSend(event) {
+      // Don't send in dev
+      if (import.meta.env.DEV) return null;
       // Strip PII from breadcrumbs
       if (event.breadcrumbs) {
         event.breadcrumbs = event.breadcrumbs.map((b) => {
@@ -48,6 +52,24 @@ export function initSentry() {
       return event;
     },
   });
+}
+
+// Error boundary wrapper for React
+export const SentryErrorBoundary = Sentry.ErrorBoundary;
+
+// Manual error reporting
+export function captureError(error: Error, context?: Record<string, unknown>) {
+  Sentry.captureException(error, { extra: context });
+}
+
+// Set user context after login
+export function setSentryUser(user: { id: string; email?: string; role?: string }) {
+  Sentry.setUser(user);
+}
+
+// Clear user on logout
+export function clearSentryUser() {
+  Sentry.setUser(null);
 }
 
 export { Sentry };

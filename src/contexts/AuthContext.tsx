@@ -8,6 +8,7 @@ import {
 import type { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import type { UserProfile } from "@/types/auth";
+import { setSentryUser, clearSentryUser } from "@/lib/sentry";
 
 interface AuthState {
   user: User | null;
@@ -41,13 +42,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .maybeSingle();
 
     if (data) {
-      setProfile(data as UserProfile);
+      const p = data as UserProfile;
+      setProfile(p);
+      setSentryUser({ id: userId, email: p.email, role: p.role });
     } else {
       // Profile doesn't exist yet (trigger may not have fired)
       // Provide a fallback profile from auth metadata — default to "user" (least privilege)
       const currentUser = (await supabase.auth.getUser()).data.user;
       if (currentUser) {
-        setProfile({
+        const fallbackProfile: UserProfile = {
           id: currentUser.id,
           email: currentUser.email ?? "",
           full_name:
@@ -58,6 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           admin_role_id: null,
           admin_role: null,
           created_at: currentUser.created_at,
+        };
+        setProfile(fallbackProfile);
+        setSentryUser({
+          id: currentUser.id,
+          email: currentUser.email,
+          role: fallbackProfile.role,
         });
       }
     }
@@ -83,6 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         fetchProfile(s.user.id);
       } else {
         setProfile(null);
+        clearSentryUser();
       }
       setLoading(false);
     });
