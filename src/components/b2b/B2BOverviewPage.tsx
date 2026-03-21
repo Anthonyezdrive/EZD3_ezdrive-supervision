@@ -44,19 +44,6 @@ export function B2BOverviewPage() {
   const { data: cdrs, isLoading } = useB2BCdrs(customerExternalIds);
   const { data: prevCdrs } = useB2BCdrsPrevYear(customerExternalIds, showComparison);
 
-  if (isLoading) {
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-surface border border-border rounded-2xl p-5 h-[88px] animate-pulse" />
-          ))}
-        </div>
-        <div className="bg-surface border border-border rounded-2xl p-6 h-[320px] animate-pulse" />
-      </div>
-    );
-  }
-
   const allData = cdrs ?? [];
 
   // Session type counts (computed on unfiltered data)
@@ -76,10 +63,6 @@ export function B2BOverviewPage() {
     return allData;
   }, [allData, sessionFilter]);
 
-  const rate = activeClient?.redevance_rate ?? 0.33;
-  const kpis = computeKPIs(data, rate);
-  const monthlyData = groupByMonth(data, rate);
-
   // Budget gauge: sum of total_cost for the current month
   const totalSpentThisMonth = useMemo(() => {
     const now = new Date();
@@ -92,6 +75,23 @@ export function B2BOverviewPage() {
       })
       .reduce((sum, c) => sum + (c.total_cost ?? 0), 0);
   }, [allData]);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="bg-surface border border-border rounded-2xl p-5 h-[88px] animate-pulse" />
+          ))}
+        </div>
+        <div className="bg-surface border border-border rounded-2xl p-6 h-[320px] animate-pulse" />
+      </div>
+    );
+  }
+
+  const rate = activeClient?.redevance_rate ?? 0.33;
+  const kpis = computeKPIs(data, rate);
+  const monthlyData = groupByMonth(data, rate);
 
   const budgetAmount = activeClient?.monthly_budget ?? 0;
   const pct = budgetAmount > 0 ? Math.round((totalSpentThisMonth / budgetAmount) * 100) : 0;

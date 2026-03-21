@@ -29,15 +29,7 @@ export function B2BMonthlyPage() {
   const [expandedMonth, setExpandedMonth] = useState<number | null>(null);
   const [selectedCdr, setSelectedCdr] = useState<B2BCdr | null>(null);
 
-  if (isLoading) {
-    return (
-      <div className="bg-surface border border-border rounded-2xl p-6 h-[500px] animate-pulse" />
-    );
-  }
-
   const data = cdrs ?? [];
-  const rate = activeClient?.redevance_rate ?? 0.33;
-  const rows = groupByMonth(data, rate);
 
   // CDRs grouped by month for drilldown
   const cdrsByMonth = useMemo(() => {
@@ -49,6 +41,15 @@ export function B2BMonthlyPage() {
     }
     return map;
   }, [data]);
+
+  if (isLoading) {
+    return (
+      <div className="bg-surface border border-border rounded-2xl p-6 h-[500px] animate-pulse" />
+    );
+  }
+
+  const rate = activeClient?.redevance_rate ?? 0.33;
+  const rows = groupByMonth(data, rate);
 
   function generateInvoice(monthNum: number) {
     if (!activeClient) return;

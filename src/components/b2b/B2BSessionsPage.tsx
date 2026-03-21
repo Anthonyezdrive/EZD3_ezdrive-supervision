@@ -1,11 +1,11 @@
 import { useState, useMemo } from "react";
 import { useOutletContext } from "react-router-dom";
-import { Search, Zap, Clock, Euro, Hash, FileText, MapPin } from "lucide-react";
+import { Search, Zap, Clock, Euro, Hash, FileText } from "lucide-react";
 import { useB2BCdrs } from "@/hooks/useB2BCdrs";
 import { useB2BFilters } from "@/contexts/B2BFilterContext";
 import { useDriverLookup } from "@/hooks/useDriverLookup";
 import { useB2BStationLookup, resolveStation } from "@/hooks/useB2BStationLookup";
-import { formatNumber, formatEUR, formatDuration, getChargePointId, getLocationName } from "@/lib/b2b-formulas";
+import { formatNumber, formatEUR, formatDuration, getChargePointId } from "@/lib/b2b-formulas";
 import { downloadCSV, todayISO } from "@/lib/export";
 import { ExportButtons } from "./ExportButtons";
 import { SlideOver } from "@/components/ui/SlideOver";
