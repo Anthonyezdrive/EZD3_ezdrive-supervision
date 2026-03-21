@@ -161,6 +161,62 @@ export function OcpiPage() {
   const updatePartnerMutation = useUpdateOcpiPartner();
   const deletePartnerMutation = useDeleteOcpiPartner();
 
+  // ── Stories 86-89 state (must be before any early return) ──
+  const [listTab, setListTab] = useState<"normal" | "partner_tokens" | "retribution" | "errors">("normal");
+
+  // Story 86: Partner eMSP tokens
+  const { data: partnerTokens } = useQuery({
+    queryKey: ["ocpi-partner-tokens"],
+    enabled: listTab === "partner_tokens",
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("ocpi_tokens")
+        .select("*")
+        .neq("issuer", "EZdrive")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      return data ?? [];
+    },
+  });
+
+  // Story 88: Roaming retribution
+  const { data: retributionData } = useQuery({
+    queryKey: ["ocpi-retribution"],
+    enabled: listTab === "retribution",
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("ocpi_cdrs")
+        .select("emsp_name, total_cost, total_energy")
+        .not("emsp_name", "is", null);
+      if (!data) return [];
+      // Group by eMSP
+      const byEmsp: Record<string, { sessions: number; energy: number; cost: number }> = {};
+      for (const cdr of data) {
+        const emsp = (cdr.emsp_name as string) ?? "Inconnu";
+        if (!byEmsp[emsp]) byEmsp[emsp] = { sessions: 0, energy: 0, cost: 0 };
+        byEmsp[emsp].sessions++;
+        byEmsp[emsp].energy += Number(cdr.total_energy) || 0;
+        byEmsp[emsp].cost += Number(cdr.total_cost) || 0;
+      }
+      return Object.entries(byEmsp).map(([emsp, data]) => ({ emsp, ...data })).sort((a, b) => b.cost - a.cost);
+    },
+  });
+
+  // Story 89: Sync errors
+  const { data: syncErrors } = useQuery({
+    queryKey: ["ocpi-sync-errors"],
+    enabled: listTab === "errors",
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("ocpi_push_log")
+        .select("*")
+        .or("response_status.gte.400,response_status.is.null")
+        .order("created_at", { ascending: false })
+        .limit(50);
+      return data ?? [];
+    },
+  });
+
   // ── Data ──
   const { data: credentials, isLoading, isError, refetch, dataUpdatedAt } = useQuery<OcpiCredential[]>({
     queryKey: ["ocpi-credentials", selectedCpoId ?? "all"],
@@ -511,62 +567,6 @@ export function OcpiPage() {
       </div>
     );
   }
-
-  // ── Stories 86-89 state ──
-  const [listTab, setListTab] = useState<"normal" | "partner_tokens" | "retribution" | "errors">("normal");
-
-  // Story 86: Partner eMSP tokens
-  const { data: partnerTokens } = useQuery({
-    queryKey: ["ocpi-partner-tokens"],
-    enabled: listTab === "partner_tokens",
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_tokens")
-        .select("*")
-        .neq("issuer", "EZdrive")
-        .order("created_at", { ascending: false })
-        .limit(50);
-      return data ?? [];
-    },
-  });
-
-  // Story 88: Roaming retribution
-  const { data: retributionData } = useQuery({
-    queryKey: ["ocpi-retribution"],
-    enabled: listTab === "retribution",
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_cdrs")
-        .select("emsp_name, total_cost, total_energy")
-        .not("emsp_name", "is", null);
-      if (!data) return [];
-      // Group by eMSP
-      const byEmsp: Record<string, { sessions: number; energy: number; cost: number }> = {};
-      for (const cdr of data) {
-        const emsp = (cdr.emsp_name as string) ?? "Inconnu";
-        if (!byEmsp[emsp]) byEmsp[emsp] = { sessions: 0, energy: 0, cost: 0 };
-        byEmsp[emsp].sessions++;
-        byEmsp[emsp].energy += Number(cdr.total_energy) || 0;
-        byEmsp[emsp].cost += Number(cdr.total_cost) || 0;
-      }
-      return Object.entries(byEmsp).map(([emsp, data]) => ({ emsp, ...data })).sort((a, b) => b.cost - a.cost);
-    },
-  });
-
-  // Story 89: Sync errors
-  const { data: syncErrors } = useQuery({
-    queryKey: ["ocpi-sync-errors"],
-    enabled: listTab === "errors",
-    queryFn: async () => {
-      const { data } = await supabase
-        .from("ocpi_push_log")
-        .select("*")
-        .or("response_status.gte.400,response_status.is.null")
-        .order("created_at", { ascending: false })
-        .limit(50);
-      return data ?? [];
-    },
-  });
 
   // ════════════════════════════════════════════════════════════
   // LIST VIEW

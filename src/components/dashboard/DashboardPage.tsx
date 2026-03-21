@@ -156,7 +156,7 @@ export function DashboardPage() {
         }
       }
 
-      const withCpoFilter = (query: ReturnType<typeof supabase.from>) => {
+      const withCpoFilter = <T extends { in: (column: string, values: string[]) => T }>(query: T): T | null => {
         if (cpChargepointIds !== null) {
           if (cpChargepointIds.length === 0) return null;
           return query.in("chargepoint_id", cpChargepointIds);

@@ -1348,17 +1348,17 @@ export function AgreementsPage() {
                 </div>
 
                 {/* Résiliation (si contrat en cours) */}
-                {editingAgreement && (
+                {editing && (
                   <div className="mt-4 pt-4 border-t border-border">
                     <h3 className="text-sm font-semibold text-foreground mb-3">Résiliation</h3>
-                    {editingAgreement.termination_requested_at ? (
+                    {editing.termination_requested_at ? (
                       <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-xl">
-                        <p className="text-sm text-orange-400 font-medium">Résiliation demandée le {new Date(editingAgreement.termination_requested_at).toLocaleDateString("fr-FR")}</p>
-                        {editingAgreement.termination_effective_at && (
-                          <p className="text-xs text-orange-300 mt-1">Date effective : {new Date(editingAgreement.termination_effective_at).toLocaleDateString("fr-FR")}</p>
+                        <p className="text-sm text-orange-400 font-medium">Résiliation demandée le {new Date(editing.termination_requested_at).toLocaleDateString("fr-FR")}</p>
+                        {editing.termination_effective_at && (
+                          <p className="text-xs text-orange-300 mt-1">Date effective : {new Date(editing.termination_effective_at).toLocaleDateString("fr-FR")}</p>
                         )}
-                        {editingAgreement.termination_reason && (
-                          <p className="text-xs text-foreground-muted mt-1">Motif : {editingAgreement.termination_reason}</p>
+                        {editing.termination_reason && (
+                          <p className="text-xs text-foreground-muted mt-1">Motif : {editing.termination_reason}</p>
                         )}
                       </div>
                     ) : (
@@ -1368,7 +1368,7 @@ export function AgreementsPage() {
                         <button
                           type="button"
                           onClick={async () => {
-                            const noticeDays = editingAgreement.notice_period_days ?? 90;
+                            const noticeDays = editing.notice_period_days ?? 90;
                             const effectiveDate = new Date();
                             effectiveDate.setDate(effectiveDate.getDate() + noticeDays);
                             await supabase.from("roaming_agreements").update({
@@ -1377,14 +1377,14 @@ export function AgreementsPage() {
                               termination_effective_at: effectiveDate.toISOString().split("T")[0],
                               termination_reason: (form as any).termination_reason || "Résiliation à l'initiative d'EZDrive",
                               termination_requested_by: "EZDrive",
-                            }).eq("id", editingAgreement.id);
+                            }).eq("id", editing.id);
                             queryClient.invalidateQueries({ queryKey: ["roaming-agreements"] });
                             toastSuccess("Résiliation demandée", `Effective dans ${noticeDays} jours (${effectiveDate.toLocaleDateString("fr-FR")})`);
                             closeModal();
                           }}
                           className="mt-3 px-4 py-2 text-sm font-medium text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl hover:bg-red-500/20 transition-colors"
                         >
-                          Demander la résiliation (préavis {editingAgreement.notice_period_days ?? 90}j)
+                          Demander la résiliation (préavis {editing.notice_period_days ?? 90}j)
                         </button>
                       </div>
                     )}

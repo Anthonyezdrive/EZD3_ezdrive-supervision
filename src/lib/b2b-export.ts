@@ -71,7 +71,7 @@ export function exportPDF(
   // PDF primitives
   const objects: string[] = [];
   const pages: string[] = [];
-  let currentPage = "";
+  const currentPage = "";
   let yPos = H - margin;
 
   const addObj = (content: string) => {
