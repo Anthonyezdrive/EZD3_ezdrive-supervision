@@ -11,6 +11,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { useB2BCdrs } from "@/hooks/useB2BCdrs";
+import { useXDriveB2BClient } from "@/hooks/useXDriveCDRs";
 import { formatNumber, formatEUR, formatDuration, getChargePointId } from "@/lib/b2b-formulas";
 import { exportCSV, exportPDF } from "@/lib/b2b-export";
 import { todayISO } from "@/lib/export";
@@ -175,16 +176,12 @@ export function XDriveCDRs() {
     theme: XDriveTheme;
   }>();
 
-  // Resolve customer IDs from partner's b2b_client
-  // The partner links to a b2b_client via b2b_client_id
-  // We need the customer_external_ids array from that client
-  // For X-DRIVE, we store partner_code as one of the external IDs
-  // Use partner_code as a proxy since it maps to customer_external_id
+  // Fetch B2B client to get the real customer_external_ids
+  const { data: b2bClient } = useXDriveB2BClient(partner?.b2b_client_id);
+
   const customerExternalIds = useMemo<string[]>(() => {
-    if (!partner) return [];
-    // partner_code is used as customer_external_id in ocpi_cdrs
-    return [partner.partner_code];
-  }, [partner]);
+    return b2bClient?.customer_external_ids ?? [];
+  }, [b2bClient]);
 
   const { data: cdrs, isLoading } = useB2BCdrs(customerExternalIds);
 
