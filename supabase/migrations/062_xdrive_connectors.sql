@@ -44,3 +44,9 @@ CREATE POLICY xdrive_emsp_b2b ON xdrive_emsp_settlements FOR SELECT
     JOIN b2b_client_access bca ON bca.b2b_client_id = xp.b2b_client_id
     WHERE bca.user_id = auth.uid()
   ));
+
+-- Add cpo_id to invoices and user_subscriptions for CPO-level filtering
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS cpo_id UUID REFERENCES cpo_operators(id);
+ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS cpo_id UUID REFERENCES cpo_operators(id);
+CREATE INDEX IF NOT EXISTS idx_invoices_cpo ON invoices(cpo_id);
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_cpo ON user_subscriptions(cpo_id);
