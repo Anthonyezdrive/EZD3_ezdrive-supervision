@@ -15,6 +15,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useXDrivePartner, useXDrivePartners } from "@/hooks/useXDrivePartner";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { B2BFilterProvider } from "@/contexts/B2BFilterContext";
 import type { XDrivePartner, XDriveModule } from "@/types/xdrive";
 
 // ── Context ──────────────────────────────────────────────
@@ -210,9 +211,11 @@ function XDriveLayoutInner() {
         </div>
 
         {/* Page content */}
-        <SectionErrorBoundary section="Portail X-DRIVE" fallbackUrl="/xdrive/dashboard">
-          <Outlet context={{ partner: activePartner, isEZDriveAdmin, theme, isReadOnly }} />
-        </SectionErrorBoundary>
+        <B2BFilterProvider>
+          <SectionErrorBoundary section="Portail X-DRIVE" fallbackUrl="/xdrive/dashboard">
+            <Outlet context={{ partner: activePartner, isEZDriveAdmin, theme, isReadOnly }} />
+          </SectionErrorBoundary>
+        </B2BFilterProvider>
 
         {/* Co-branding footer */}
         <div className="flex items-center justify-center gap-2 pt-6 pb-2">
