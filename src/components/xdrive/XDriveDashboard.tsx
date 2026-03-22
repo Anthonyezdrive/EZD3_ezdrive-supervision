@@ -176,9 +176,27 @@ export function XDriveDashboard() {
     [dateRange, paymentFilter, operatorFilter]
   );
 
-  const { data: rawCdrs, isLoading: cdrsLoading } = useXDriveCDRs(customerExternalIds, filters);
+  const { data: rawCdrs, isLoading: cdrsLoading, error: cdrsError } = useXDriveCDRs(customerExternalIds, filters);
 
   const isLoading = clientLoading || cdrsLoading;
+
+  // DEBUG — remove after fixing
+  if (import.meta.env.DEV || true) {
+    console.log("[XDrive Dashboard Debug]", {
+      partnerId: partner?.id,
+      partnerName: partner?.display_name,
+      b2bClientId: partner?.b2b_client_id,
+      b2bClientLoaded: !!b2bClient,
+      b2bClientName: b2bClient?.name,
+      customerExternalIds,
+      dateFrom: filters.dateFrom,
+      dateTo: filters.dateTo,
+      cdrsCount: rawCdrs?.length ?? "loading",
+      cdrsError: cdrsError?.message,
+      clientLoading,
+      cdrsLoading,
+    });
+  }
 
   // Own eMSP party ID (partner's direct party)
   // We assume the partner's own emsp_party_id = GFX or can be inferred;
@@ -343,6 +361,14 @@ export function XDriveDashboard() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* DEBUG BANNER — REMOVE AFTER FIX */}
+      <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs font-mono text-yellow-300 space-y-1">
+        <div>Partner: {partner?.display_name ?? "NULL"} | b2b_client_id: {partner?.b2b_client_id ?? "NULL"}</div>
+        <div>B2B Client: {b2bClient?.name ?? (clientLoading ? "loading..." : "NULL")} | IDs: {JSON.stringify(customerExternalIds)}</div>
+        <div>Filters: {filters.dateFrom} → {filters.dateTo}</div>
+        <div>CDRs: {cdrsLoading ? "loading..." : `${rawCdrs?.length ?? 0} results`} {cdrsError ? `ERROR: ${cdrsError.message}` : ""}</div>
       </div>
 
       {/* ── KPI cards row ────────────────────────────────────── */}
