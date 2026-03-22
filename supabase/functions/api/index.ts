@@ -9,6 +9,8 @@
 
 import { apiCorsResponse, apiNotFound, apiServerError, apiUnauthorized, apiBadRequest } from "../_shared/api-response.ts";
 import { requireAuth, optionalAuth, AuthError } from "../_shared/auth-middleware.ts";
+import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from "../_shared/rate-limiter.ts";
+import { getCorsHeaders } from "../_shared/cors.ts";
 
 // Module imports
 import { handleStations } from "./_modules/stations.ts";
@@ -36,7 +38,13 @@ import { handleTechnician } from "./_modules/technician.ts";
 Deno.serve(async (req: Request): Promise<Response> => {
   // CORS preflight
   if (req.method === "OPTIONS") {
-    return apiCorsResponse();
+    return apiCorsResponse(req);
+  }
+
+  // Rate limiting
+  const rateResult = checkRateLimit(req, RATE_LIMITS.api);
+  if (!rateResult.allowed) {
+    return rateLimitResponse(rateResult, getCorsHeaders(req));
   }
 
   try {

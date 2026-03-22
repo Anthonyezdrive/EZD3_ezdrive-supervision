@@ -27,6 +27,7 @@
 // ============================================================
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from "../_shared/rate-limiter.ts";
 import {
   createPaymentIntent,
   capturePaymentIntent,
@@ -81,15 +82,21 @@ interface SpotPaymentIntent {
 
 // ─── Main Handler ─────────────────────────────────────────
 
+const spotCorsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
-      },
-    });
+    return new Response(null, { headers: spotCorsHeaders });
+  }
+
+  // Rate limiting
+  const rateResult = checkRateLimit(req, RATE_LIMITS.payment);
+  if (!rateResult.allowed) {
+    return rateLimitResponse(rateResult, spotCorsHeaders);
   }
 
   const url = new URL(req.url);

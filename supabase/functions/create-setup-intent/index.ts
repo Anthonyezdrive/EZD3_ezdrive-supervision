@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
+import { checkRateLimit, RATE_LIMITS, rateLimitResponse } from "../_shared/rate-limiter.ts";
 
 const STRIPE_SECRET_KEY = Deno.env.get("STRIPE_SECRET_KEY");
 
@@ -8,6 +9,12 @@ serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
+  }
+
+  // Rate limiting
+  const rateResult = checkRateLimit(req, RATE_LIMITS.payment);
+  if (!rateResult.allowed) {
+    return rateLimitResponse(rateResult, corsHeaders);
   }
 
   try {
