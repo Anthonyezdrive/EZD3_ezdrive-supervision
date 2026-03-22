@@ -96,7 +96,6 @@ const CDR_HEADERS = [
   { key: "customer_external_id", label: "Client ID" },
   { key: "driver_external_id", label: "Driver ID" },
   { key: "station_id", label: "Station ID" },
-  { key: "auth_id", label: "Auth ID" },
   { key: "emsp_party_id", label: "eMSP" },
   { key: "emsp_country_code", label: "Pays eMSP" },
   { key: "charger_type", label: "Type chargeur" },
